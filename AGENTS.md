@@ -13,7 +13,7 @@ it (`store.user.name = 'Ada'`) wakes only that path's consumers.
 writing code that uses the store. It is written in the [Agent Skills](https://agentskills.io)
 format and covers the architecture rule, the template rules, batching, wake modes, and
 JSNQ. Consumers of the published package can install it as a skill; see the README section
-"Use With AI Coding Agents".
+"Use with AI coding agents".
 
 ## Repository layout
 
@@ -32,7 +32,7 @@ the main application repository, not here.
   `prepack` builds it for npm.
 - **The core must never statically import `@adsq/jsnq/core/pipeline` or
   `core/pipeline-fastpath`.** They belong to the `/jsnq` entry point and reach the core
-  only through `src/core/jsnq-contract.ts`. A static import silently adds ~12 kB gzip to
+  only through `src/core/jsnq-contract.ts`. A static import silently adds ~13 kB gzip to
   every application, including those that never query. `core/data-engine` is fine — it is
   the small path engine the core legitimately shares.
 - **`sideEffects` must keep matching the jsnq entry file** (`**/*-jsnq.mjs`). ng-packagr
@@ -48,12 +48,19 @@ the main application repository, not here.
 ## Verify before proposing a change
 
 ```sh
-npx tsc --noEmit
-bun test/smoke.ts
-bun test/jsnq-optional.test.ts
-npm run build         # ng-packagr
-npm pack --dry-run
+npx tsc --noEmit          # npm run typecheck
+bun test/smoke.ts         # npm run test:smoke
+bun test/jsnq-optional.test.ts   # npm run test:jsnq-optional
+npm run examples          # every file in examples/ must run green
+npm run build             # ng-packagr
+npm pack --dry-run        # the tarball must contain only the `files` whitelist
 ```
 
-All four must pass. `bun install` prints a `404 @adsq/jsnq` line for the unpublished peer
-in some setups; that is expected and not a failure — check the exit status instead.
+All of them must pass. `npm run typecheck:examples` type-checks `examples/` (they are excluded
+from the library typecheck and from the ng-packagr build on purpose). Peers, including
+`@adsq/jsnq`, install automatically with npm and bun; check the exit status rather than the
+install log.
+
+`examples/` and the code in `README.md` / `SKILL.md` are documentation and must stay correct:
+when the public API or a runtime behaviour changes, run the examples and update the docs in the
+same change. They are not published; only the `files` whitelist in `package.json` ships.

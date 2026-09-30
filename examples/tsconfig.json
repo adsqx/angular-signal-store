@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "..",
+    "baseUrl": ".",
+    "types": [],
+    "paths": {
+      "@adsq/angular-signal-store": ["../src/index.ts"],
+      "@adsq/angular-signal-store/jsnq": ["../src/jsnq.ts"],
+      "@adsq/angular-signal-store/devtools": ["../src/devtools.ts"]
+    }
+  },
+  "include": ["0*.ts", "_check.ts", "../src/**/*.ts"],
+  "exclude": []
+}
