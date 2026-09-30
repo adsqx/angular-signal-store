@@ -3,7 +3,7 @@ import { CreateStore } from './create-store.class';
 import { StoreProxy } from '../interfaces/types';
 import type { IStoreInstance } from '../interfaces/store-instance.interface';
 import { ProxyFactory } from '../proxy/proxy-factory.class';
-import { createCallableProxy as createCallableProxyUtil } from '../proxy/callable-proxy.util';
+import { createCallableProxy as createCallableProxyUtil } from '../proxy/proxy-node';
 import { EMPTY, Observable, Subscription } from 'rxjs';
 import { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';

@@ -28,6 +28,9 @@ const API_FACTORIES: ReadonlyMap<string, ApiFactory> = new Map<string, ApiFactor
   ['$liveQueryOne', (host, path) => createLiveQuery(host, path, 'first')],
 ]);
 
+/** Names of the jsnq surface exposed on a proxy node (the keys of the factory table). */
+export const PROXY_API_KEYS: readonly string[] = [...API_FACTORIES.keys()];
+
 /** The jsnq surface exposed on a proxy node (`mutate`, `query`, `$query`, ...), or null. */
 export function createProxyApiMethod(key: string, host: StoreHost, path: string): ApiMethod | null {
   return API_FACTORIES.get(key)?.(host, path) ?? null;

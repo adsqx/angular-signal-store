@@ -2,15 +2,14 @@ import { ProxyFactoryConfig } from '../interfaces/proxy-factory-config.interface
 import { ILogger } from '../interfaces/logger.interface';
 import { StoreProxy, ProxyCallable } from '../interfaces/types';
 import { IStoreInstance } from '../interfaces/store-instance.interface';
-import { createCallableProxy, type CallableProxyOptions } from './callable-proxy.util';
-import { asHost, type StoreHost } from './store-host';
+import { createNodeProxy, createRootProxy, type ProxyContext } from './proxy-node';
+import { asHost, serviceOf, type StoreHost } from './store-host';
 import { createWriteFns } from './store-writes';
-import { GenericProxyHandler } from './generic-proxy-handler.class';
 import { StoreData } from '../types/advanced-types';
 import { SignalStore } from '../core/signal-store.service';
 import { CreateStoreService } from '../core/create-store.core';
 import type { CacheMetrics } from '../core/services/proxy-cache.manager';
-import { PathReader } from '../utils/abstracts/path-reader';
+import { readPath } from '../utils/abstracts/path-reader';
 
 export class ProxyFactory {
   private readonly maxCacheSize: number;
@@ -25,7 +24,6 @@ export class ProxyFactory {
   private readonly strictDeleteUndefined: boolean;
   private readonly rxjsAllowedOnRoot: boolean;
   private metricsIntervalId: ReturnType<typeof setInterval> | null = null;
-  private readonly pathReader = new PathReader();
 
   constructor(config: ProxyFactoryConfig = {}) {
     this.maxCacheSize = config.maxCacheSize ?? 1000;
@@ -122,7 +120,7 @@ export class ProxyFactory {
     if (this.useInPlaceIteration && path.indexOf('[') === -1) {
       return this.readDotPathInPlace(root, path);
     }
-    return this.pathReader.read(root, path);
+    return readPath(root, path);
   }
 
   private readDotPathInPlace(root: Record<string, unknown> | undefined, path: string): unknown {
@@ -141,12 +139,7 @@ export class ProxyFactory {
     return current;
   }
 
-  private cacheMake(
-    path: string,
-    value: unknown,
-    host: StoreHost,
-    make: (path: string, value: unknown) => ProxyCallable
-  ): ProxyCallable {
+  private cacheMake(path: string, host: StoreHost, make: (path: string) => ProxyCallable): ProxyCallable {
     const service = this.createStoreService;
     const cached = service.getProxyCacheEntry(path);
     if (cached) {
@@ -156,7 +149,7 @@ export class ProxyFactory {
 
     this.recordCacheMiss();
 
-    const callableProxy = make(path, value);
+    const callableProxy = make(path);
     service.setProxyCacheEntry(callableProxy, path);
 
     // Prefetch missing ancestors, root-most first: "a.b.c" visits "a", then "a.b".
@@ -165,7 +158,7 @@ export class ProxyFactory {
       if (service.getProxyCacheEntry(prefix)) continue;
       const intermediateValue = this.getValueIteratively(host, prefix);
       if (intermediateValue === undefined) continue;
-      service.setProxyCacheEntry(make(prefix, intermediateValue), prefix);
+      service.setProxyCacheEntry(make(prefix), prefix);
       try {
         host.prefetchCursorWithNode?.(prefix, intermediateValue);
       } catch (e) {
@@ -184,43 +177,25 @@ export class ProxyFactory {
       warn: (message) => this.logger.warn(message),
     });
 
-    const callableOptions: CallableProxyOptions = {
+    const make = (path: string): ProxyCallable => createNodeProxy(ctx, path);
+    const ctx: ProxyContext = {
+      host,
+      service: serviceOf(host),
       strictInvalidPath: this.strictInvalidPath,
       strictDeleteUndefined: this.strictDeleteUndefined,
       setFn,
       deleteFn,
+      throwOnRootRxjs: !this.rxjsAllowedOnRoot && this.strictRootRxjs,
+      readRoot: (path) => this.getValueIteratively(host, path),
+      makeChild: (path) => {
+        try {
+          return this.cacheMake(path, host, make);
+        } catch (error) {
+          this.logger.warn(`Error creating proxy for path ${path}:`, error);
+          return make(path);
+        }
+      },
     };
-
-    const make = (path: string, value: unknown): ProxyCallable =>
-      createCallableProxy(path, host, value, nestedProxyFactory, callableOptions);
-
-    const nestedProxyFactory = (path: string, value: unknown): ProxyCallable => {
-      try {
-        return this.cacheMake(path, value, host, make);
-      } catch (error) {
-        this.logger.warn(`Error creating proxy for path ${path}:`, error);
-        return make(path, value);
-      }
-    };
-
-    const handler = new GenericProxyHandler<T>(storeInstance, {
-      pathPrefix: '',
-      exposeStoreMethods: true,
-      resolveFn: (path) => this.getValueIteratively(host, path),
-      nestedProxyFactory,
-      rxjsAllowedOnRoot: this.rxjsAllowedOnRoot,
-      strictInvalidPath: this.strictInvalidPath,
-      strictRootRxjs: this.strictRootRxjs,
-      strictDeleteUndefined: this.strictDeleteUndefined,
-      originalNestedValue: undefined,
-      setFn,
-      deleteFn,
-    });
-
-    return new Proxy({}, {
-      get: handler.createProxyGetter({}),
-      set: handler.createProxySetter(),
-      deleteProperty: handler.createProxyDeleter()
-    }) as StoreProxy<T>;
+    return createRootProxy(ctx) as StoreProxy<T>;
   }
 }

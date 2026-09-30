@@ -23,6 +23,7 @@ import { DependencyTracker } from './services/dependency-tracker';
 import { WakeEngine } from './wake/wake-engine';
 import type { StoreWakeupMode, WakeUpPathOptions } from './wake/wake-types';
 import { selectObservable, warnOnWideDependencies } from './store-select';
+import { readBySegments, segmentsOf } from '../utils/abstracts/path-reader';
 
 export type { StoreWakeupMode } from './wake/wake-types';
 
@@ -72,14 +73,14 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return this.wake.resolve(normalized);
   }
 
-  /** Delegated to PathReader (universal path traversal engine) */
+  /** Delegated to the shared path reader */
   getPathSegments(path: string): readonly string[] {
-    return this.ctx.reader.getSegments(path);
+    return segmentsOf(path);
   }
 
-  /** Delegated to PathReader */
+  /** Delegated to the shared path reader */
   fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
-    return this.ctx.reader.readBySegments(root as Record<string, unknown>, pathSegments);
+    return readBySegments(root as Record<string, unknown>, pathSegments);
   }
 
   private get computedSvc(): ComputedService<TState> {

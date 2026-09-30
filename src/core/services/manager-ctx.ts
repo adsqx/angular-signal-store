@@ -1,7 +1,7 @@
 import type { SignalStore } from '../signal-store.service';
 import { emitDevEvent } from '../devtools-bus';
 import { PathUtils } from '../../utils/path-utils';
-import { PathReader } from '../../utils/abstracts/path-reader';
+import { readBySegments } from '../../utils/abstracts/path-reader';
 import type { StoreDevToolsAction } from '../../devtools/types';
 
 /**
@@ -9,7 +9,6 @@ import type { StoreDevToolsAction } from '../../devtools/types';
  * (already normalized) reads of the store data, and the single devtools emission path.
  */
 export class ManagerCtx {
-  readonly reader = new PathReader();
   private rootRef: Record<string, unknown> | null = null;
 
   constructor(
@@ -28,7 +27,7 @@ export class ManagerCtx {
 
   /** Value at an already-normalized, non-empty path. */
   read(normalized: string): unknown {
-    return this.reader.readBySegments(this.root, PathUtils.splitNormalizedPath(normalized));
+    return readBySegments(this.root, PathUtils.splitNormalizedPath(normalized));
   }
 
   emit(action: StoreDevToolsAction): void {
