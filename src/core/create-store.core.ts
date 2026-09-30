@@ -23,8 +23,11 @@ import { DependencyTracker } from './services/dependency-tracker';
 import { WakeEngine } from './wake/wake-engine';
 import type { StoreWakeupMode, WakeUpPathOptions } from './wake/wake-types';
 import { selectObservable, warnOnWideDependencies } from './store-select';
+import { hasIndexedKeyFrom } from './indexed-keys';
 
 export type { StoreWakeupMode } from './wake/wake-types';
+
+type BehaviorUpdater = (path: string, value: unknown) => void;
 
 export class CreateStoreService<TState extends StoreData = StoreData> {
   private readonly dependencyTracker = new DependencyTracker();
@@ -64,20 +67,11 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   endAction(): void { this.wake.scheduler.end(); }
   flushPendingBumps(): void { this.wake.scheduler.flushNow(); }
 
-  resolveVersionPath(path: string): string {
-    return this.wake.resolve(PathUtils.normalizePath(path));
-  }
+  resolveVersionPath(path: string): string { return this.wake.resolve(PathUtils.normalizePath(path)); }
+  resolveVersionPathNormalized(normalized: string): string { return this.wake.resolve(normalized); }
 
-  resolveVersionPathNormalized(normalized: string): string {
-    return this.wake.resolve(normalized);
-  }
-
-  /** Delegated to PathReader (universal path traversal engine) */
-  getPathSegments(path: string): readonly string[] {
-    return this.ctx.reader.getSegments(path);
-  }
-
-  /** Delegated to PathReader */
+  // Path traversal (delegated to PathReader, the universal path traversal engine)
+  getPathSegments(path: string): readonly string[] { return this.ctx.reader.getSegments(path); }
   fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
     return this.ctx.reader.readBySegments(root as Record<string, unknown>, pathSegments);
   }
@@ -89,34 +83,17 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   // ------------------
   // Wake operations (delegated to the wake engine)
   // ------------------
-  updateBehaviorsBySegments(path: string, newValue?: unknown): void {
-    this.wake.updateBehaviors(path, newValue);
-  }
+  updateBehaviorsBySegments(path: string, newValue?: unknown): void { this.wake.updateBehaviors(path, newValue); }
 
-  wakeUpMutationPath(
-    path: string,
-    value: unknown,
-    options?: WakeUpPathOptions,
-    behaviorUpdater?: (path: string, value: unknown) => void
-  ): boolean {
+  wakeUpMutationPath(path: string, value: unknown, options?: WakeUpPathOptions, behaviorUpdater?: BehaviorUpdater): boolean {
     return this.wake.wakePath(PathUtils.normalizePath(path), value, options, behaviorUpdater);
   }
 
-  wakeUpMutationPathNormalized(
-    normalized: string,
-    value: unknown,
-    options?: WakeUpPathOptions,
-    behaviorUpdater?: (path: string, value: unknown) => void
-  ): boolean {
+  wakeUpMutationPathNormalized(normalized: string, value: unknown, options?: WakeUpPathOptions, behaviorUpdater?: BehaviorUpdater): boolean {
     return this.wake.wakePath(normalized, value, options, behaviorUpdater);
   }
 
-  wakeUpArrayMutation(
-    path: string,
-    value: unknown,
-    afterVersion?: () => void,
-    behaviorUpdater?: (path: string, value: unknown) => void
-  ): void {
+  wakeUpArrayMutation(path: string, value: unknown, afterVersion?: () => void, behaviorUpdater?: BehaviorUpdater): void {
     this.wake.wakeArray(PathUtils.normalizePath(path), value, afterVersion, behaviorUpdater);
   }
 
@@ -125,9 +102,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     else this.wake.bump(PathUtils.normalizePath(path));
   }
 
-  wakeUpVersionPathWithMode(path: string, mode: StoreWakeupMode): void {
-    this.wake.bumpByMode(mode, PathUtils.normalizePath(path));
-  }
+  wakeUpVersionPathWithMode(path: string, mode: StoreWakeupMode): void { this.wake.bumpByMode(mode, PathUtils.normalizePath(path)); }
 
   // ------------------
   // Type-safe selection API: select(fn) and computedOf(fn)
@@ -168,10 +143,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     });
   }
 
-  // Observable method cache, stored as flat map
   private observableMethodCache: Record<string, (...args: unknown[]) => unknown> = Object.create(null);
-
-  // Proxy cache orchestration
   private readonly proxyCacheManager: ProxyCacheManager;
 
   constructor(
@@ -186,91 +158,39 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
 
   // ------------------
-  // Proxy cache operations (delegated to manager)
+  // Proxy cache operations (delegated to the manager)
   // ------------------
-  hasIndexedProxyCacheFrom(path: string, startIndex: number): boolean {
-    return this.proxyCacheManager.hasIndexedChildAtOrAfter(path, startIndex);
-  }
+  hasIndexedProxyCacheFrom(path: string, startIndex: number): boolean { return this.proxyCacheManager.hasIndexedChildAtOrAfter(path, startIndex); }
+  deleteIndexedProxyCacheRange(path: string, startIndex: number, endIndex: number): void { this.proxyCacheManager.deleteIndexedRange(path, startIndex, endIndex); }
+  getProxyCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[] } { return this.proxyCacheManager.metricsSnapshot(); }
+  getProxyCacheDump(): Array<{ key: string; value: string }> { return this.proxyCacheManager.dump(); }
+  resetProxyCache(): void { this.proxyCacheManager.reset(); }
+  recordProxyCacheHit(): void { this.proxyCacheManager.markHit(); }
+  recordProxyCacheMiss(): void { this.proxyCacheManager.markMiss(); }
+  getProxyCacheEntry(path: string): ProxyCallable | undefined { return this.proxyCacheManager.peek(path); }
+  setProxyCacheEntry(proxy: ProxyCallable, path: string): void { this.proxyCacheManager.add(path, proxy); }
+  clearProxyCacheForPath(path: string): void { this.proxyCacheManager.delete(path); }
+  getSignalFromProxyCache(path: string): Signal<unknown> | undefined { return this.proxyCacheManager.getSignal(path); }
+  setSignalInProxyCache(path: string, signalRef: Signal<unknown>): void { this.proxyCacheManager.setSignal(path, signalRef); }
+  emitProxyMetrics(metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) { this.proxyCacheManager.emitMetrics(metrics); }
 
-  deleteIndexedProxyCacheRange(path: string, startIndex: number, endIndex: number): void {
-    this.proxyCacheManager.deleteIndexedRange(path, startIndex, endIndex);
-  }
-
+  /** True when a behavior, computed, or version node under `path` is indexed at or after `startIndex`. */
   hasIndexedDerivedNodeFrom(path: string, startIndex: number): boolean {
     const hasIndexed = (keys: string[]) => keys.length > 0 && hasIndexedKeyFrom(keys, PathUtils.normalizePath(path), startIndex);
-    return hasIndexed(this.behaviors.keys())
-      || hasIndexed(this._computedSvc?.keys() ?? [])
-      || hasIndexed(this.versions.keys());
+    return hasIndexed(this.behaviors.keys()) || hasIndexed(this._computedSvc?.keys() ?? []) || hasIndexed(this.versions.keys());
   }
 
-  getProxyCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[] } {
-    return this.proxyCacheManager.metricsSnapshot();
-  }
-
-  resetProxyCache(): void {
-    this.proxyCacheManager.reset();
-  }
-
-  recordProxyCacheHit(): void {
-    this.proxyCacheManager.markHit();
-  }
-
-  recordProxyCacheMiss(): void {
-    this.proxyCacheManager.markMiss();
-  }
-
-  getProxyCacheEntry(path: string): ProxyCallable | undefined {
-    return this.proxyCacheManager.peek(path);
-  }
-
-  setProxyCacheEntry(proxy: ProxyCallable, path: string): void {
-    this.proxyCacheManager.add(path, proxy);
-  }
-
-  clearProxyCacheForPath(path: string): void {
-    this.proxyCacheManager.delete(path);
-  }
-
-  getProxyCacheDump(): Array<{ key: string; value: string }> {
-    return this.proxyCacheManager.dump();
-  }
-
-  getSignalFromProxyCache(path: string): Signal<unknown> | undefined {
-    return this.proxyCacheManager.getSignal(path);
-  }
-
-  setSignalInProxyCache(path: string, signalRef: Signal<unknown>): void {
-    this.proxyCacheManager.setSignal(path, signalRef);
-  }
-
-  emitProxyMetrics(metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) {
-    this.proxyCacheManager.emitMetrics(metrics);
-  }
   setCloneComputedOutputs(enabled: boolean) { this.cloneComputedOutputs = !!enabled; }
   getCloneComputedOutputs(): boolean { return this.cloneComputedOutputs; }
 
-  // ------------------
-  // Observable cache helpers
-  // ------------------
-  getCachedObservableMethod(
-    path: string,
-    method: string,
-    observable: object
-  ): (...args: unknown[]) => unknown {
-    const normalized = PathUtils.normalizePath(path);
-    const key = `${normalized}.${method}`;
-    if (!this.observableMethodCache[key]) {
-      const obsMethod = (observable as Record<string, (...args: unknown[]) => unknown>)[method];
-      this.observableMethodCache[key] = obsMethod.bind(observable);
-    }
-    return this.observableMethodCache[key];
+  getCachedObservableMethod(path: string, method: string, observable: object): (...args: unknown[]) => unknown {
+    const key = `${PathUtils.normalizePath(path)}.${method}`;
+    return (this.observableMethodCache[key] ??= (observable as Record<string, (...args: unknown[]) => unknown>)[method].bind(observable));
   }
 
   // ------------------
-  // Computed operations
+  // Computed operations (delegated to ComputedService)
   // ------------------
-  
-  // Typed wrapper delegating to ComputedService for array query methods
   createArrayQueryComputed<
     P extends ValidPath<TState> & string,
     M extends ArrayQueryMethod | 'length',
@@ -296,75 +216,31 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return this.computedSvc.createArrayQueryComputed(path, method, predicate as ArrayQueryPredicate<E, M>, ...args) as Signal<R> | undefined;
   }
 
-  registerPipelineComputed(path: string, signalRef: Signal<unknown>): void {
-    this.computedSvc.registerPipelineComputed(path, signalRef);
-  }
-
-  addToComputeStore(path: string): void {
-    this.computedSvc.add(path as ValidPath<TState> & string);
-  }
-
-  deleteFromComputeStore(path: string): void {
-    this.computedSvc.remove(path);
-  }
-
-  getComputed(path: string): Signal<unknown> | undefined {
-    return this.computedSvc.get(path as ValidPath<TState> & string);
-  }
+  registerPipelineComputed(path: string, signalRef: Signal<unknown>): void { this.computedSvc.registerPipelineComputed(path, signalRef); }
+  addToComputeStore(path: string): void { this.computedSvc.add(path as ValidPath<TState> & string); }
+  deleteFromComputeStore(path: string): void { this.computedSvc.remove(path); }
+  getComputed(path: string): Signal<unknown> | undefined { return this.computedSvc.get(path as ValidPath<TState> & string); }
+  isComputedExists(path: string): boolean { return this.computedSvc.isExists(path); }
+  getComputedStore(): Record<string, Signal<unknown>> { return this.computedSvc.store(); }
+  cleanupComputedStore(pathPrefix?: string): void { this.computedSvc.cleanup(pathPrefix); }
 
   // ------------------
-  // Behavior operations
+  // Behavior operations (delegated to BehaviorService)
   // ------------------
-  // Pobierz observable z pipe i automatycznie śledź subskrypcje
-  getObservableWithPipe<T = unknown>(
-    path: string,
-    pipeFn?: (obs: Observable<unknown>) => Observable<T>
-  ): Observable<T> {
+  getObservableWithPipe<T = unknown>(path: string, pipeFn?: (obs: Observable<unknown>) => Observable<T>): Observable<T> {
     const observable = this.behaviors.getTrackedObservable(path);
     return pipeFn ? (pipeFn(observable) as Observable<T>) : (observable as Observable<T>);
   }
 
-  getObservable(path: string): BehaviorSubject<unknown> {
-    return this.behaviors.get(path);
-  }
-
-  getTrackedObservable(path: string): Observable<unknown> {
-    return this.behaviors.getTrackedObservable(path);
-  }
+  getObservable(path: string): BehaviorSubject<unknown> { return this.behaviors.get(path); }
+  getTrackedObservable(path: string): Observable<unknown> { return this.behaviors.getTrackedObservable(path); }
+  isBehaviorExists(path: string): boolean { return this.behaviors.isExists(path); }
+  getBehaviorStore(): Record<string, BehaviorSubject<unknown>> { return this.behaviors.store(); }
+  cleanupBehaviorStore(pathPrefix?: string): void { this.behaviors.cleanup(pathPrefix); }
 
   // Refresh existing BehaviorSubjects under a prefix (incl. nested paths)
   updateBehaviorByPrefix(pathPrefix: string, options?: { skipSelf?: boolean }): void {
     this.wake.updateBehaviorsByPrefix(pathPrefix, !!options?.skipSelf);
-  }
-
-  // ------------------
-  // Helper methods for checking and managing stores
-  // ------------------
-  isBehaviorExists(path: string): boolean {
-    return this.behaviors.isExists(path);
-  }
-
-  isComputedExists(path: string): boolean {
-    return this.computedSvc.isExists(path);
-  }
-
-  // Removed: getBehaviorKeys() - moved to DevService
-  // Removed: getComputedKeys() - moved to DevService
-
-  getBehaviorStore(): Record<string, BehaviorSubject<unknown>> {
-    return this.behaviors.store();
-  }
-
-  getComputedStore(): Record<string, Signal<unknown>> {
-    return this.computedSvc.store();
-  }
-
-  cleanupBehaviorStore(pathPrefix?: string): void {
-    this.behaviors.cleanup(pathPrefix);
-  }
-
-  cleanupComputedStore(pathPrefix?: string): void {
-    this.computedSvc.cleanup(pathPrefix);
   }
 
   destroy(): void {
@@ -389,29 +265,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return version;
   }
 
-  bumpVersionsForNormalized(normalized: string): void {
-    this.wake.bump(normalized);
-  }
-
-  bumpDescendantVersionsForNormalized(normalizedPrefix: string): void {
-    this.wake.bumpDescendants(normalizedPrefix);
-  }
-
-  cleanupVersionStore(pathPrefix?: string): void {
-    this.versions.cleanup(pathPrefix);
-  }
-}
-
-/** True when some key under `normalized` continues with an integer segment >= `startIndex`. */
-function hasIndexedKeyFrom(keys: string[], normalized: string, startIndex: number): boolean {
-  if (!normalized) return false;
-  const prefix = `${normalized}.`;
-  for (const key of keys) {
-    if (!key.startsWith(prefix)) continue;
-    const dotIndex = key.indexOf('.', prefix.length);
-    const segment = dotIndex === -1 ? key.slice(prefix.length) : key.slice(prefix.length, dotIndex);
-    const index = Number(segment);
-    if (Number.isInteger(index) && index >= startIndex) return true;
-  }
-  return false;
+  bumpVersionsForNormalized(normalized: string): void { this.wake.bump(normalized); }
+  bumpDescendantVersionsForNormalized(normalizedPrefix: string): void { this.wake.bumpDescendants(normalizedPrefix); }
+  cleanupVersionStore(pathPrefix?: string): void { this.versions.cleanup(pathPrefix); }
 }
