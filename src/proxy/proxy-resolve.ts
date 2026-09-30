@@ -73,7 +73,7 @@ type SubscribeArgs = Parameters<Observable<unknown>['subscribe']>;
 /** `pipe` / `subscribe` bound to the node's path; the function is stable per node. */
 function rxMethod(node: ProxyNode, method: 'pipe' | 'subscribe'): BoundMethod['handler'] {
   const bound = node.boundMethods();
-  let entry = bound.get(method);
+  let entry = bound[method];
   if (entry === undefined) {
     const { service } = node.ctx;
     const path = node.path;
@@ -85,7 +85,7 @@ function rxMethod(node: ProxyNode, method: 'pipe' | 'subscribe'): BoundMethod['h
       fn = (...args: SubscribeArgs) => service.getTrackedObservable(path).subscribe(...args);
     }
     entry = { handler: fn };
-    bound.set(method, entry);
+    bound[method] = entry;
   }
   return entry.handler;
 }

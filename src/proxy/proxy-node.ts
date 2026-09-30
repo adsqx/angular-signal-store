@@ -26,6 +26,10 @@ export type CoercionKey = 'toString' | 'valueOf' | 'toJSON' | typeof Symbol.toPr
 /** Above this many cached children a node drops its child cache before adding another. */
 const CHILD_CACHE_CAP = 200;
 
+/** Prototype-less string-keyed record: the cheapest lookup table on the hot path (no `__proto__` keys to guard). */
+type Dict<V> = Record<string, V | undefined>;
+const newDict = <V>(): Dict<V> => Object.create(null);
+
 // Coercion semantics, shared by every node (a node only adds the value to read).
 const stringify = (v: unknown): unknown => {
   try {
@@ -58,11 +62,12 @@ const COERCIONS: Record<CoercionKey, (node: ProxyNode) => Coercion> = {
  * (symbol check, child-cache hit); everything else is `resolveMiss`.
  */
 export class ProxyNode implements ProxyHandler<object> {
-  /** Child proxies handed out so far (strong, capped). */
-  private children: Map<string, ProxyCallable> | undefined = undefined;
-  private bound: Map<string, BoundMethod> | undefined = undefined;
-  private queries: Map<string, WeakRef<object>> | undefined = undefined;
-  private coercions: Map<CoercionKey, Coercion> | undefined = undefined;
+  /** Child proxies handed out so far (strong, capped at `CHILD_CACHE_CAP`). */
+  private children: Dict<ProxyCallable> | undefined = undefined;
+  private childCount = 0;
+  private bound: Dict<BoundMethod> | undefined = undefined;
+  private queries: Dict<WeakRef<object>> | undefined = undefined;
+  private coercions: Partial<Record<CoercionKey, Coercion>> | undefined = undefined;
   private signalRef: Signal<unknown> | undefined = undefined;
   private normalizedPath: string | undefined = undefined;
   private helpersDefined = false;
@@ -83,21 +88,21 @@ export class ProxyNode implements ProxyHandler<object> {
       if (key === Symbol.toPrimitive) return this.coercion(Symbol.toPrimitive);
       return key === Symbol.toStringTag ? Reflect.get(target, key) : undefined;
     }
-    const hit = this.children?.get(key);
+    const hit = this.children?.[key];
     return hit !== undefined ? hit : resolveMiss(this, key);
   }
 
   set(_target: object, key: string | symbol, value: unknown): boolean {
     if (typeof key === 'symbol') return false;
     applySet(this.ctx, this.childPath(key), value);
-    if (value === undefined) this.children?.delete(key);
+    if (value === undefined) this.forget(key);
     return true;
   }
 
   deleteProperty(_target: object, key: string | symbol): boolean {
     if (typeof key === 'symbol') return false;
     applyDelete(this.ctx, this.childPath(key));
-    this.children?.delete(key);
+    this.forget(key);
     return true;
   }
 
@@ -148,31 +153,41 @@ export class ProxyNode implements ProxyHandler<object> {
     return this.isRoot ? this.ctx.readRoot(path) : PathUtils.getByPath(this.ctx.host.returnStore(), path);
   }
 
-  /** Caches a freshly built child; a full cache is dropped first. */
+  /** Caches a freshly built child (`key` is not cached yet); a full cache is dropped first. */
   remember(key: string, child: ProxyCallable): void {
-    const children = (this.children ??= new Map());
-    if (children.size > CHILD_CACHE_CAP) children.clear();
-    children.set(key, child);
+    if (this.children === undefined || this.childCount > CHILD_CACHE_CAP) {
+      this.children = newDict();
+      this.childCount = 0;
+    }
+    this.children[key] = child;
+    this.childCount++;
+  }
+
+  private forget(key: string): void {
+    const children = this.children;
+    if (children !== undefined && children[key] !== undefined) {
+      delete children[key];
+      this.childCount--;
+    }
   }
 
   clearChildren(): void {
-    this.children?.clear();
+    this.children = undefined;
+    this.childCount = 0;
   }
 
-  boundMethods(): Map<string, BoundMethod> {
-    return (this.bound ??= new Map());
+  boundMethods(): Dict<BoundMethod> {
+    return (this.bound ??= newDict());
   }
 
-  queryCache(): Map<string, WeakRef<object>> {
-    return (this.queries ??= new Map());
+  queryCache(): Dict<WeakRef<object>> {
+    return (this.queries ??= newDict());
   }
 
   /** The coercion function for `key`; stable per node, so detached calls keep working. */
   coercion(key: CoercionKey): Coercion {
-    const cache = (this.coercions ??= new Map());
-    let fn = cache.get(key);
-    if (fn === undefined) cache.set(key, (fn = COERCIONS[key](this)));
-    return fn;
+    const cache: Partial<Record<CoercionKey, Coercion>> = (this.coercions ??= Object.create(null));
+    return (cache[key] ??= COERCIONS[key](this));
   }
 
   /** The computed signal of this node's path, resolved once. */

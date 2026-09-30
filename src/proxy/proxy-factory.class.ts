@@ -116,7 +116,7 @@ export class ProxyFactory {
   }
 
   private getValueIteratively(host: StoreHost, path: string): unknown {
-    const root = host.store as Record<string, unknown>;
+    const root = host.store;
     if (this.useInPlaceIteration && path.indexOf('[') === -1) {
       return this.readDotPathInPlace(root, path);
     }

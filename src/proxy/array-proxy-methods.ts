@@ -80,7 +80,7 @@ function runMutation(
 
 function mutationMethod(node: ProxyNode, method: ArrayMutationMethod, path: string, candidate: unknown[]): BoundMethod['handler'] {
   const bound = node.boundMethods();
-  let entry = bound.get(method);
+  let entry = bound[method];
   if (entry === undefined) {
     const created: BoundMethod = {
       arrayRef: candidate,
@@ -90,7 +90,7 @@ function mutationMethod(node: ProxyNode, method: ArrayMutationMethod, path: stri
         return runMutation(node, method, path, args, calledAsMethod ? created.arrayRef : undefined);
       },
     };
-    bound.set(method, (entry = created));
+    bound[method] = entry = created;
   }
   entry.arrayRef = candidate;
   return entry.handler;
@@ -107,13 +107,13 @@ function queryMethod(node: ProxyNode, method: ArrayQueryMethod, path: string): B
     if (!isArrayPath(host, path)) return undefined;
     const [first, ...rest] = args;
     const cacheKey = buildArrayQueryCacheKey(path, method, first, rest);
-    const cached = cache.get(cacheKey)?.deref();
+    const cached = cache[cacheKey]?.deref();
     if (cached) return cached;
 
     const result = service.createArrayQueryComputed(path, method, first, ...rest);
     if (result !== undefined) {
       try {
-        cache.set(cacheKey, new WeakRef(result));
+        cache[cacheKey] = new WeakRef(result);
       } catch {
         // environments without WeakRef support: run uncached
       }
