@@ -1,12 +1,13 @@
 import { Inject, Injectable, Optional } from '@angular/core';
-import { CreateStore } from './create-store.class';
+import type { CreateStore } from './create-store.class';
 import { StoreProxy } from '../interfaces/types';
 import type { IStoreInstance } from '../interfaces/store-instance.interface';
-import { ProxyFactory } from '../proxy/proxy-factory.class';
+import type { ProxyFactory } from '../proxy/proxy-factory.class';
 import { createCallableProxy as createCallableProxyUtil } from '../proxy/callable-proxy.util';
 import { EMPTY, Observable, Subscription } from 'rxjs';
 import { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';
+import { getBySegmentsCore } from '../utils/path-core';
 import type { Stores } from '../types/registry';
 import type { StoreDevToolsAction } from '../devtools/types';
 import { setLoggerActive } from '../utils/logger';
@@ -16,40 +17,29 @@ import {
   type AngularStoreDevtools,
   type DevToolsEvent,
 } from './devtools-contract';
+import { buildStore, type CreateStoreOptions } from './store-factory';
+import { StoreWaiters, type WaitForStoreOptions } from './store-waiters';
+import { wakeOptions } from './wake/wake-types';
 
 export type { DevToolsEvent } from './devtools-contract';
-
-export interface WaitForStoreOptions {
-  timeoutMs?: number;
-  signal?: AbortSignal;
-}
-
-type StoreWaiter = {
-  resolve(store: StoreProxy<StoreData>): void;
-  reject(error: Error): void;
-  cleanup(): void;
-};
+export type { WaitForStoreOptions } from './store-waiters';
+export type { CreateStoreOptions } from './store-factory';
 
 @Injectable({
   providedIn: 'root'
 })
 export class SignalStore {
   devActive:boolean = false;
-  // Map przechowujący "surowe" instancje CreateStore (pełna funkcjonalność)
+  // "Raw" CreateStore instances (full functionality)
   private storeInstances: Record<string, CreateStore<StoreData>> = Object.create(null);
-
-  // Map przechowujący gotowe proxowane sklepy, zwracane na zewnątrz
+  // Ready-made proxied stores handed out to consumers
   private storeProxies: Record<string, StoreProxy<StoreData>> = Object.create(null);
-  // Referencje do ProxyFactory, by móc zarządzać timerami metryk
+  // ProxyFactory references, to manage their metrics timers
   private proxyFactories: Record<string, ProxyFactory> = Object.create(null);
-  // Konfiguracja limitow proxy cache per store
+  // Proxy cache limit per store
   private proxyCacheLimits: Record<string, number> = Object.create(null);
-  private storeWaiters = new Map<string, Set<StoreWaiter>>();
-  
-  // ------------------------------
-  // Graph-based stores - moved to CreateStoreService
-  // ------------------------------
-  
+  private readonly waiters = new StoreWaiters();
+
   constructor(
     @Optional() @Inject(SIGNAL_STORE_DEVTOOLS)
     private devService: AngularStoreDevtools | null = null
@@ -58,7 +48,7 @@ export class SignalStore {
   }
 
   /* ----------------------------------------------------------------
-   * DevTools helpers – serve jako centralny "bus" dla panelu DevTools
+   * DevTools helpers – the central "bus" for the DevTools panel
    * --------------------------------------------------------------*/
   public get devAction$() { return this.devService?.action$ ?? EMPTY; }
   public get devReadAction$() { return this.devService?.readAction$ ?? EMPTY; }
@@ -110,23 +100,12 @@ export class SignalStore {
     }, 'direct');
   }
 
+  // `options` is CreateStoreOptions written as an identity mapped type, so the emitted public signature
+  // stays a structurally expanded object type instead of an alias reference (API surface unchanged).
   createStore<T extends StoreData = StoreData>(
     val: T,
     name: string,
-    options?: {
-      useInPlaceIteration?: boolean;
-      dependencyMode?: 'exact' | 'container';
-      cloneInitialValue?: 'none' | 'structured';
-      strict?: { invalidPath?: boolean; rootRxjs?: boolean; deleteUndefined?: boolean };
-      rxjsAllowedOnRoot?: boolean;
-      metricsThrottleMs?: number;
-      proxyCacheMaxSize?: number;
-      versionBump?: {
-        strategy?: 'microtask' | 'raf';
-        throttleMs?: number;
-        partialInvalidation?: boolean;
-      };
-    }
+    options?: { [K in keyof CreateStoreOptions]: CreateStoreOptions[K] }
   ): StoreProxy<T> {
     if (!name || typeof name !== 'string') {
       throw new Error(`Store name must be a non-empty string. Received: ${String(name)}`);
@@ -135,53 +114,13 @@ export class SignalStore {
       throw new Error(`Store '${name}' already exists. Use useStore('${name}') instead of creating it again.`);
     }
 
-    // 1. Create low-level store instance responsible for all logic
-    const storeInstance = new CreateStore(this, name, undefined, this.devService ?? undefined);
+    const { instance, proxy, factory } = buildStore(this, val, name, options, this.getDevtoolsAdapter());
 
-    // Apply dependency mode if provided
-    if (options?.dependencyMode) {
-      storeInstance.createServiceGetter.setDependencyMode(options.dependencyMode);
-    }
-
-    // Apply version bump configuration if provided
-    if (options?.versionBump) {
-      const vb = options.versionBump;
-      if (vb.strategy) storeInstance.createServiceGetter.setVersionBumpStrategy(vb.strategy);
-      if (typeof vb.throttleMs === 'number') storeInstance.createServiceGetter.setVersionBumpThrottle(vb.throttleMs);
-      if (typeof vb.partialInvalidation === 'boolean') storeInstance.createServiceGetter.setPartialInvalidation(vb.partialInvalidation);
-    }
-
-    // 2. Set initial value inside the store **before** proxy is built
-    const initial = options?.cloneInitialValue === 'none' ? val : structuredClone(val);
-    Object.assign(storeInstance.returnStore(), initial);
-
-    // 3. Create proxy that exposes reactive API for consumers
-    const proxyFactory = new ProxyFactory({
-      metricsCallback: (_storeName, metrics) => {
-        storeInstance.createServiceGetter.emitProxyMetrics(metrics);
-      },
-      maxCacheSize: options?.proxyCacheMaxSize,
-      storeName: name,
-      signalStore: this,
-      createStoreService: (storeInstance as unknown as { createService: CreateStore<StoreData>['createService'] }).createService,
-      useInPlaceIteration: !!options?.useInPlaceIteration,
-      strictInvalidPath: !!options?.strict?.invalidPath,
-      strictRootRxjs: !!options?.strict?.rootRxjs,
-      strictDeleteUndefined: !!options?.strict?.deleteUndefined,
-      rxjsAllowedOnRoot: options?.rxjsAllowedOnRoot ?? true
-    });
-    if (typeof options?.metricsThrottleMs === 'number') {
-      this.metricsThrottleMs = Math.max(0, options!.metricsThrottleMs!);
-    }
-    const proxyStore = proxyFactory.createStoreProxy<T>(storeInstance as unknown as IStoreInstance<T>);
-
-    // 4. Zapisz oddzielnie instancję i proxy
-    this.storeInstances[name] = storeInstance as CreateStore<StoreData>;
-    this.storeProxies[name] = proxyStore as StoreProxy<StoreData>;
-    this.proxyFactories[name] = proxyFactory;
-    this.resolveStoreWaiters(name, proxyStore as StoreProxy<StoreData>);
-
-    return proxyStore;
+    this.storeInstances[name] = instance as unknown as CreateStore<StoreData>;
+    this.storeProxies[name] = proxy as StoreProxy<StoreData>;
+    this.proxyFactories[name] = factory;
+    this.waiters.resolve(name, proxy as StoreProxy<StoreData>);
+    return proxy;
   }
 
   /** Wait for a named proxy without changing the synchronous useStore/getStore contract. */
@@ -190,58 +129,13 @@ export class SignalStore {
     options: WaitForStoreOptions = {}
   ): Promise<StoreProxy<T>> {
     const existing = this.storeProxies[name];
-    if (existing) return Promise.resolve(existing as StoreProxy<T>);
-
-    const abortError = () => Object.assign(new Error(`waitForStore('${name}') aborted.`), { name: 'AbortError' });
-    if (options.signal?.aborted) return Promise.reject(abortError());
-
-    return new Promise<StoreProxy<T>>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const waiters = this.storeWaiters.get(name) ?? new Set<StoreWaiter>();
-      const onAbort = () => finishReject(abortError());
-      const waiter: StoreWaiter = {
-        resolve: (store) => resolve(store as StoreProxy<T>),
-        reject,
-        cleanup: () => {
-          if (timer !== undefined) clearTimeout(timer);
-          options.signal?.removeEventListener('abort', onAbort);
-        },
-      };
-      const finishReject = (error: Error) => {
-        waiters.delete(waiter);
-        if (waiters.size === 0) this.storeWaiters.delete(name);
-        waiter.cleanup();
-        waiter.reject(error);
-      };
-
-      waiters.add(waiter);
-      this.storeWaiters.set(name, waiters);
-      options.signal?.addEventListener('abort', onAbort, { once: true });
-      if (options.timeoutMs !== undefined) {
-        const timeoutMs = Math.max(0, options.timeoutMs);
-        timer = setTimeout(
-          () => finishReject(new Error(`waitForStore('${name}') timed out after ${timeoutMs}ms.`)),
-          timeoutMs
-        );
-      }
-    });
-  }
-
-  private resolveStoreWaiters(name: string, store: StoreProxy<StoreData>): void {
-    const waiters = this.storeWaiters.get(name);
-    if (!waiters) return;
-    this.storeWaiters.delete(name);
-    for (const waiter of waiters) {
-      waiter.cleanup();
-      waiter.resolve(store);
-    }
+    return existing ? Promise.resolve(existing as StoreProxy<T>) : this.waiters.wait<T>(name, options);
   }
 
   /**
-   * Zwraca wewnętrzną instancję CreateStore używaną przez logikę biblioteki.
-   * Używane jedynie wewnętrznie; dla komponentów/serwisów należy użyć useStore().
+   * The internal CreateStore instance behind the library's logic. Internal use only; components and
+   * services should use useStore().
    */
-  // Public for internal consumers across library (kept for compatibility)
   getStore(name: string) {
     return this.storeInstances[name];
   }
@@ -259,46 +153,23 @@ export class SignalStore {
   }
 
   destroyStore(name: string): void {
-    const storeInstance = this.storeInstances[name] as (CreateStore<StoreData> & {
-      createServiceGetter?: {
-        destroy?: () => void;
-      };
-      destroy?: () => void;
-    }) | undefined;
+    const storeInstance = this.storeInstances[name];
     const proxyFactory = this.proxyFactories[name];
+    if (!storeInstance && !proxyFactory && !this.storeProxies[name]) return;
 
-    if (!storeInstance && !proxyFactory && !this.storeProxies[name]) {
-      return;
+    warnOnFailure('proxyFactory', () => proxyFactory?.destroy?.());
+    warnOnFailure('storeInstance', () => {
+      if (typeof storeInstance?.destroy === 'function') storeInstance.destroy();
+    });
+    for (const registry of [this.storeInstances, this.storeProxies, this.proxyFactories, this.lastMetricsEmit, this.proxyCacheLimits]) {
+      delete registry[name];
     }
-
-    try {
-      proxyFactory?.destroy?.();
-    } catch (e) {
-      console.warn('SignalStore proxyFactory destroy error:', e);
-    }
-
-    try {
-      if (typeof storeInstance?.destroy === 'function') {
-        storeInstance.destroy();
-      }
-    } catch (e) {
-      console.warn('SignalStore storeInstance destroy error:', e);
-    }
-
-    delete this.storeInstances[name];
-    delete this.storeProxies[name];
-    delete this.proxyFactories[name];
-    delete this.lastMetricsEmit[name];
-    delete this.proxyCacheLimits[name];
   }
 
   removeStore(name: string): void {
     this.destroyStore(name);
   }
 
-  /**
-   * Zwraca proxy dla danego sklepu – tego powinny używać komponenty.
-   */
   // Overloads: typed by registry, and a fallback to keep compatibility when registry is empty
   useStore<K extends keyof Stores & string>(name: K): StoreProxy<Stores[K]>;
   useStore(name: string): StoreProxy<StoreData>;
@@ -307,7 +178,7 @@ export class SignalStore {
     if (!proxy) {
       throw new Error(`Store '${name}' not found. Make sure to create it first with createStore().`);
     }
-    return proxy as StoreProxy<StoreData>;
+    return proxy;
   }
 
   // Public API compatibility method
@@ -315,53 +186,45 @@ export class SignalStore {
     return createCallableProxyUtil(nestedPath, storeInstance as IStoreInstance<StoreData>, nestedValue);
   }
 
-  // Proxy cache operations - moved to CreateStoreService
-
-  // Computed, Behavior and Proxy operations - moved to CreateStoreService
-
-  // Store operations (przeniesione z StoreOperations)
+  /**
+   * Legacy in-place write (no undefined-key removal, `SET_VALUE` event). Deliberately not routed through
+   * `CreateStore`'s mutation pipeline: that one emits `SET_VALUE_OBSERVE` with cloned snapshots, removes
+   * keys on undefined, creates BehaviorSubjects, and writes through the cursor engine, so unifying
+   * would change events and results.
+   */
   setValue(storeName: string, path: string, val: object): void {
     const store = this.getStore(storeName);
     const normalized = PathUtils.normalizePath(path);
     const previousValue = store.readStore(normalized);
-    const oldValue = this.devActive ? previousValue : undefined;
 
-    // In-place mutation without Immer/root update (legacy API)
     PathUtils.setByPath(store.returnStore() as StoreData, normalized, val);
-    
-    // DevTools logging
+
     if (this.devActive) {
       this.emitDevAction(storeName, {
         type: 'SET_VALUE',
-        payload: {
-          path: normalized,
-          oldValue,
-          value: val
-        }
+        payload: { path: normalized, oldValue: previousValue, value: val }
       });
     }
-    
-    store.wakeUpMutationPath(normalized, val, {
-      syncDescendants:
-        PathUtils.isBranchValue(previousValue) ||
-        PathUtils.isBranchValue(val)
-    });
+
+    store.wakeUpMutationPath(
+      normalized,
+      val,
+      wakeOptions(false, PathUtils.isBranchValue(previousValue) || PathUtils.isBranchValue(val))
+    );
   }
 
+  /** Value at `path` in the named store's data. */
   read(storeName: string, path: string) {
     const store = this.getStore(storeName);
-    const normalized = PathUtils.normalizePath(path);
-    const segments = store.createServiceGetter.getPathSegments(normalized);
-    return store.createServiceGetter.fastReadBySegments(store.returnStore(), segments);
+    // Normalized twice on purpose: malformed bracket input is not a fixed point of normalization,
+    // and reads keep traversing the same segments as before (the second pass is one indexOf).
+    const normalized = PathUtils.normalizePath(PathUtils.normalizePath(path));
+    return getBySegmentsCore(store.returnStore(), PathUtils.splitNormalizedPath(normalized));
   }
 
-  // Legacy aliases (kept to avoid breaking internal imports)
-  readStore(storeName: string, path: string) {
-    return this.read(storeName, path);
-  }
-  getSignalValue(storeName: string, path: string) {
-    return this.read(storeName, path);
-  }
+  // Legacy aliases of read()
+  readStore(storeName: string, path: string) { return this.read(storeName, path); }
+  getSignalValue(storeName: string, path: string) { return this.read(storeName, path); }
 
   setProxyCacheLimit(storeName: string, limit: number): void {
     if (!storeName) return;
@@ -378,10 +241,14 @@ export class SignalStore {
 
   // Typed read via selector function with inference
   select<K extends keyof Stores & string, R>(storeName: K, selector: (state: Stores[K]) => R): R {
-    const store = this.getStore(storeName);
-    const root = store.returnStore() as Stores[K];
-    return selector(root);
+    return selector(this.getStore(storeName).returnStore() as Stores[K]);
   }
+}
 
-  // ensureProxyRoot moved to CreateStoreService
+function warnOnFailure(label: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    console.warn(`SignalStore ${label} destroy error:`, e);
+  }
 }
