@@ -1,51 +1,11 @@
-import { BehaviorSubject, Observable, Subscription, type Observer } from 'rxjs';
+import type { BehaviorSubject, Observable } from 'rxjs';
+import { TrackedBehaviorSubject } from './tracked-behavior-subject';
 import type { ManagerCtx } from './manager-ctx';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import { CleanupScheduler } from '../../utils/cleanup-scheduler';
 import { PathUtils } from '../../utils/path-utils';
 
 const BEHAVIOR_CLEANUP_DELAY_MS = 50;
-
-type NextObserver<T> = Partial<Observer<T>> | ((value: T) => void) | null;
-
-class TrackedBehaviorSubject<T> extends BehaviorSubject<T> {
-  constructor(
-    initialValue: T,
-    private readonly onSubscribe: () => void,
-    private readonly onUnsubscribe: () => void
-  ) {
-    super(initialValue);
-  }
-
-  override subscribe(
-    observerOrNext?: NextObserver<T>,
-    error?: ((error: unknown) => void) | null,
-    complete?: (() => void) | null
-  ): Subscription {
-    this.onSubscribe();
-    let subscription: Subscription;
-    try {
-      // Runtime accepts the observer-object form too; rxjs only types it on the 1-arg overload.
-      subscription = super.subscribe(observerOrNext as (value: T) => void, error, complete);
-    } catch (error) {
-      this.onUnsubscribe();
-      throw error;
-    }
-
-    if (subscription.closed) {
-      this.onUnsubscribe();
-      return subscription;
-    }
-
-    let finalized = false;
-    subscription.add(() => {
-      if (finalized) return;
-      finalized = true;
-      this.onUnsubscribe();
-    });
-    return subscription;
-  }
-}
 
 interface BehaviorNode {
   subject: BehaviorSubject<unknown>;
