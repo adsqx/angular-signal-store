@@ -21,8 +21,8 @@ export function snapshotForDevtools(value: unknown): unknown {
 }
 
 /**
- * The one emission path of a `CreateStore` for its store-level events. Every method returns before
- * touching the store or the adapter unless dev tools are active.
+ * The one emission path of a `CreateStore` for its store-level events. Nothing is emitted unless dev
+ * tools are active; computed and behavior events still gather their payload first (see `computed`).
  */
 export class StoreDevtools {
   constructor(
@@ -41,16 +41,18 @@ export class StoreDevtools {
     this.emit('SET_VALUE_OBSERVE', { path, value: snapshotForDevtools(value), oldValue: snapshotForDevtools(oldValue) });
   }
 
+  // The keys and the snapshot are gathered even while dev tools are inactive, as they always
+  // were: reading the computed signals inside a consumer's reactive context links that consumer
+  // to its siblings, and existing consumers' re-run timing depends on that link.
   computed(action: 'add' | 'remove', path: string): void {
-    if (!this.active) return;
     const store = this.service.getComputedStore();
     const keys = this.adapter ? this.adapter.getComputedKeys(store) : Object.keys(store);
-    this.emit('COMPUTED_STORE_UPDATE', { action, path, keys, snapshot: this.computedSnapshot() });
+    const snapshot = this.computedSnapshot();
+    this.emit('COMPUTED_STORE_UPDATE', { action, path, keys, snapshot });
   }
 
   /** `withState`: attach the live BehaviorSubject map (`currentState`). */
   behavior(path: string, action: BehaviorAction, value?: unknown, withState = false): void {
-    if (!this.active) return;
     const keys = this.adapter ? this.adapter.getBehaviorKeys(this.service.getBehaviorStore()) : [];
     this.emit('BEHAVIOR_STORE_UPDATE', {
       action,
