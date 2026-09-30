@@ -1,12 +1,20 @@
+type BumpStrategy = 'microtask' | 'raf';
+
+/** Starts a deferred run; returns a cancellable frame id, or null when it cannot be cancelled. */
+const START: Record<BumpStrategy, (run: () => void) => number | null> = {
+  microtask: (run) => (queueMicrotask(run), null),
+  raf: (run) =>
+    typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame(run) : (queueMicrotask(run), null),
+};
+
 /**
  * Schedules version signal bumps with optional batching, RAF scheduling and throttling.
- * Extracted from CreateStoreService so the lifecycle is explicit and testable.
  */
 export class VersionBumpScheduler {
   private depth = 0;
   private pending = new Set<string>();
   private scheduled = false;
-  private strategy: 'microtask' | 'raf' = 'microtask';
+  private strategy: BumpStrategy = 'microtask';
   private throttle = 0;
   private lastFlush = 0;
   private rafId: number | null = null;
@@ -20,25 +28,14 @@ export class VersionBumpScheduler {
 
   end(): void {
     if (this.depth === 0) return;
-    this.depth--;
-    if (this.depth === 0) this.schedule();
+    if (--this.depth === 0) this.schedule();
   }
 
   flushNow(): void {
     if (this.depth > 0) return;
-    this.scheduled = false;
-    if (this.rafId !== null && typeof cancelAnimationFrame !== 'undefined') {
-      cancelAnimationFrame(this.rafId);
-    }
-    this.rafId = null;
-    if (this.timeoutId !== null) {
-      clearTimeout(this.timeoutId);
-      this.timeoutId = null;
-    }
+    this.cancelPending();
     if (this.pending.size === 0) return;
-    const items = new Set(this.pending);
-    this.pending.clear();
-    this.flush(items);
+    this.drain();
     this.lastFlush = Date.now();
   }
 
@@ -57,26 +54,29 @@ export class VersionBumpScheduler {
   schedule(): void {
     if (this.scheduled) return;
     this.scheduled = true;
-    if (this.strategy === 'raf' && typeof requestAnimationFrame !== 'undefined') {
-      this.rafId = requestAnimationFrame(() => this.execute());
-    } else {
-      Promise.resolve().then(() => this.execute());
-    }
+    this.rafId = START[this.strategy](() => this.execute());
   }
 
   destroy(): void {
+    this.cancelPending();
     this.pending.clear();
     this.depth = 0;
-    this.scheduled = false;
     this.lastFlush = 0;
-    if (this.rafId !== null && typeof cancelAnimationFrame !== 'undefined') {
-      cancelAnimationFrame(this.rafId);
-    }
+  }
+
+  private cancelPending(): void {
+    this.scheduled = false;
+    if (this.rafId !== null && typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(this.rafId);
     this.rafId = null;
-    if (this.timeoutId !== null) {
-      clearTimeout(this.timeoutId);
-    }
+    if (this.timeoutId !== null) clearTimeout(this.timeoutId);
     this.timeoutId = null;
+  }
+
+  /** Hands the pending set to the flush callback and starts a fresh one (no copy). */
+  private drain(): void {
+    const items = this.pending;
+    this.pending = new Set();
+    this.flush(items);
   }
 
   private execute(): void {
@@ -85,17 +85,16 @@ export class VersionBumpScheduler {
     if (this.pending.size === 0) return;
     if (this.throttle > 0) {
       const now = Date.now();
-      if (now - this.lastFlush < this.throttle) {
+      const wait = this.throttle - (now - this.lastFlush);
+      if (wait > 0) {
         this.timeoutId = setTimeout(() => {
           this.timeoutId = null;
           this.execute();
-        }, this.throttle - (now - this.lastFlush));
+        }, wait);
         return;
       }
       this.lastFlush = now;
     }
-    const items = new Set(this.pending);
-    this.pending.clear();
-    this.flush(items);
+    this.drain();
   }
 }
