@@ -12,11 +12,11 @@ type PathPlan = JsonPathPlan;
  * Uses FlatStoreMap for better performance than plain Record.
  */
 export class CursorManager {
-  private pathSetPlanCache = new FlatStoreMap<PathPlan>();
-  private cursor = new JsonDataCursor();
+  private readonly pathSetPlanCache = new FlatStoreMap<PathPlan>();
+  private readonly cursor = new JsonDataCursor();
 
   applyPathPlan(normalizedPath: string): PathPlan {
-    return this.pathSetPlanCache.getOrCreate(normalizedPath, (normalized) => createJsonPathPlan(normalized));
+    return this.pathSetPlanCache.getOrCreate(normalizedPath, createJsonPathPlan);
   }
 
   prefetch(path: string, node: Record<string, unknown> | null): void {

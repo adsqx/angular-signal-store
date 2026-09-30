@@ -1,32 +1,35 @@
 import { signal, type WritableSignal } from '@angular/core';
-import type { CreateStoreService } from '../create-store.core';
-import { BaseManager } from './base.manager';
+import type { ManagerCtx } from './manager-ctx';
+import { PathUtils } from '../../utils/path-utils';
 import { FlatStoreMap } from '../../utils/flat-store-map';
-import type { StoreData } from '../../types/advanced-types';
+
+const newVersion = () => signal(0);
 
 /** VersionManager: stores one version signal per path. */
-export class VersionManager<TStore extends StoreData = StoreData> extends BaseManager<TStore> {
+export class VersionManager {
   private readonly nodes = new FlatStoreMap<WritableSignal<number>>();
+  /** Set on first `get`; `cleanup` stays silent (no devtools event) until then. */
+  private used = false;
 
-  constructor(core: CreateStoreService<TStore>, storeName: string) {
-    super(core, storeName);
-  }
+  constructor(private readonly ctx: ManagerCtx) {}
 
   get(path: string): WritableSignal<number> {
-    return this.nodes.getOrCreate(path, () => signal(0));
+    this.used = true;
+    return this.nodes.getOrCreate(path, newVersion);
   }
 
   updateIfExists(path: string): void {
     const node = this.nodes.get(path);
     if (!node) return;
     node.update((n) => n + 1);
-    this.emitDevtoolsUpdate('update', path);
+    if (this.ctx.devActive) this.emitDevtools('update', path);
   }
 
   cleanup(pathPrefix?: string): void {
+    if (!this.used) return;
     if (pathPrefix) this.nodes.deleteByPrefix(pathPrefix);
     else this.nodes.clear();
-    this.emitDevtoolsUpdate('remove', pathPrefix);
+    if (this.ctx.devActive) this.emitDevtools('remove', pathPrefix);
   }
 
   keys(): string[] {
@@ -37,11 +40,19 @@ export class VersionManager<TStore extends StoreData = StoreData> extends BaseMa
     return this.nodes.size > 0;
   }
 
-  private emitDevtoolsUpdate(action: 'add' | 'remove' | 'update', path = ''): void {
-    if (!this.devActive) return;
-    this.emitDevTools({
+  /** Keys strictly below `prefix`, in insertion order. */
+  descendants(prefix: string): string[] {
+    if (!prefix) return [];
+    const keys = this.nodes.getByPrefix(prefix);
+    const self = keys.indexOf(prefix);
+    if (self >= 0) keys.splice(self, 1);
+    return keys;
+  }
+
+  private emitDevtools(action: 'add' | 'remove' | 'update', path = ''): void {
+    this.ctx.emit({
       type: 'VERSION_STORE_UPDATE',
-      payload: { storeName: this.storeName, action, path: path && this.normalizePath(path), keys: this.keys(), graph: undefined }
+      payload: { storeName: this.ctx.storeName, action, path: path && PathUtils.normalizePath(path), keys: this.keys(), graph: undefined }
     });
   }
 }
