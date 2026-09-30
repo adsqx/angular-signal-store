@@ -15,13 +15,11 @@ export class DependencyTracker {
   }
 
   registerRead(path: string): void {
-    if (!this.trackReads || !this.activeCollector) return;
-    this.activeCollector.add(PathUtils.normalizePath(path));
+    if (this.isCollecting()) this.activeCollector!.add(PathUtils.normalizePath(path));
   }
 
   registerReadNormalized(path: string): void {
-    if (!this.trackReads || !this.activeCollector) return;
-    this.activeCollector.add(path);
+    if (this.isCollecting()) this.activeCollector!.add(path);
   }
 
   setTrackReads(enabled: boolean): void {
@@ -38,17 +36,13 @@ export class DependencyTracker {
 
   trackProjection<TOut>(project: () => TOut): { value: TOut; deps: string[] } {
     this.startCollect();
-    let value!: TOut;
-    let hasError = false;
-    let capturedError: unknown;
+    let value: TOut;
+    let collected: Set<string> | null;
     try {
       value = project();
-    } catch (error) {
-      hasError = true;
-      capturedError = error;
+    } finally {
+      collected = this.stopCollect();
     }
-    const depSet = this.stopCollect() ?? new Set<string>();
-    if (hasError) throw capturedError;
-    return { value, deps: Array.from(depSet) };
+    return { value, deps: collected ? Array.from(collected) : [] };
   }
 }

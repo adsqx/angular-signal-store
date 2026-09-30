@@ -1,9 +1,9 @@
 import { BehaviorSubject, Observable, Subscription, combineLatest } from 'rxjs';
 import { Signal, WritableSignal, computed } from '@angular/core';
 import { PathUtils } from '../utils/path-utils';
-import { ProxyCallable } from '../interfaces/types';
+import type { ProxyCallable } from '../interfaces/types';
 import { SignalStore } from './signal-store.service';
-import { ComputedService } from './services/computed.manager';
+import { ComputedService, type ArrayQueryPredicate } from './services/computed.manager';
 import { BehaviorService } from './services/behavior.manager';
 import { ProxyCacheManager, CacheMetrics } from './services/proxy-cache.manager';
 import { PathReader } from '../utils/abstracts/path-reader';
@@ -23,27 +23,9 @@ import { VersionManager } from './services/version.manager';
 import { DependencyTracker } from './services/dependency-tracker';
 import { VersionBumpCoordinator } from './services/version-bump-coordinator';
 import { VersionBumpPolicy } from './services/version-bump-policy';
-import { ReactivityWakeupService, type WakeUpPathOptions } from './services/reactivity-wakeup.service';
-import type { AngularStoreDevtools } from './devtools-contract';
-import { DevToolsEmitter } from '../utils/abstracts/dev-tools-emitter';
-
-type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
-  M extends 'find' | 'findIndex' | 'filter' | 'some' | 'every' ? PredicateFn<E> :
-  M extends 'map' ? MapFn<E, unknown> :
-  M extends 'reduce' ? ReduceFn<E, unknown> :
-  M extends 'includes' | 'indexOf' ? E :
-  undefined;
+import { ReactivityWakeupService, NO_WAKE_OPTIONS, type WakeUpPathOptions } from './services/reactivity-wakeup.service';
 
 export type StoreWakeupMode = 'leaf' | 'grained' | 'granular' | 'exact' | 'graied' | 'graned';
-type CanonicalStoreWakeupMode = 'leaf' | 'grained';
-const STORE_WAKEUP_MODE_ALIASES: Record<StoreWakeupMode, CanonicalStoreWakeupMode> = {
-  leaf: 'leaf',
-  grained: 'grained',
-  granular: 'grained',
-  exact: 'grained',
-  graied: 'grained',
-  graned: 'grained',
-};
 
 export class CreateStoreService<TState extends StoreData = StoreData> {
   private readonly dependencyTracker = new DependencyTracker();
@@ -92,24 +74,25 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   private versionBumpCoordinator = new VersionBumpCoordinator(this.versionPolicy, this.bumpScheduler, {
     hasNodes: () => this._versionSvc?.hasNodes() ?? false,
-    hasExistingNodes: () => this._versionSvc?.hasNodes() ?? false,
     keys: () => this._versionSvc?.keys() ?? [],
-    updateIfExists: (path) => this.updateVersionIfExists(path),
-    cleanup: (pathPrefix) => this.cleanupVersionStore(pathPrefix)
+    updateIfExists: (path) => this.updateVersionIfExists(path)
   });
-  private readonly wakeupModeHandlers: Record<CanonicalStoreWakeupMode, (normalized: string) => void> = {
-    leaf: (normalized) => this.versionBumpCoordinator.bumpLeafBranch(normalized),
-    grained: (normalized) => this.versionBumpCoordinator.bumpExact(normalized),
-  };
+
+  // Aliases (incl. legacy misspellings) share one handler per canonical mode.
+  private readonly wakeupModeHandlers: Record<StoreWakeupMode, (normalized: string) => void> = (() => {
+    const leaf = (normalized: string) => this.versionBumpCoordinator.bumpLeafBranchNormalized(normalized);
+    const grained = (normalized: string) => this.versionBumpCoordinator.bumpExactNormalized(normalized);
+    // Null prototype: an inherited key such as 'constructor' must not resolve to a handler.
+    return Object.assign(Object.create(null), {
+      leaf, grained, granular: grained, exact: grained, graied: grained, graned: grained
+    });
+  })();
 
   private reactivityWakeup = new ReactivityWakeupService({
     behaviorUpdatesEnabled: () => this.behaviorUpdatesEnabled,
     updateBehavior: (path, value) => this.updateBehaviorsBySegments(path, value),
-    ensureBehavior: (path) => this.addToBehaviorStore(path),
-    bumpVersion: (path) => this.bumpVersionsFor(path),
+    ensureBehavior: (path) => this.behaviorSvc.add(path),
     bumpVersionNormalized: (path) => this.bumpVersionsForNormalized(path),
-    updateDescendantBehaviors: (pathPrefix) => this.updateDescendantBehaviorsByPrefix(pathPrefix),
-    bumpDescendantVersions: (pathPrefix) => this.bumpDescendantVersionsFor(pathPrefix),
     bumpDescendantVersionsNormalized: (pathPrefix) => this.bumpDescendantVersionsForNormalized(pathPrefix),
     clearProxyCache: (pathPrefix) => this.clearProxyCacheForPath(pathPrefix),
     updateBehaviorByPrefix: (pathPrefix, options) => this.updateBehaviorByPrefix(pathPrefix, options)
@@ -131,9 +114,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return this.pathReader.getSegments(path);
   }
 
-  /** No-op: PathReader handles its own cache eviction */
-  clearPathSegmentCache(_pathPrefix: string): void {}
-
   /** Delegated to PathReader */
   fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
     return this.pathReader.readBySegments(root as Record<string, unknown>, pathSegments);
@@ -149,19 +129,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
   private cloneComputedOutputs = true;
   private behaviorUpdatesEnabled = true;
-  private _storeProxy?: TState;
-  private readonly devToolsEmitter = new DevToolsEmitter(
-    () => this.signalStore.devActive,
-    (event) => {
-      const ds = this.signalStore.getDevtoolsAdapter();
-      if (ds) ds.emitAction(event);
-    },
-    (event) => {
-      const ds = this.signalStore.getDevtoolsAdapter();
-      if (ds) ds.emitRead(event);
-    }
-  );
-
+  private _storeProxy?: object;
   // Lazy services for modular logic
   private _computedSvc?: ComputedService<TState>;
   private _behaviorSvc?: BehaviorService<TState>;
@@ -182,7 +150,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   wakeUpMutationPath(
     path: string,
     value: unknown,
-    options: WakeUpPathOptions = {},
+    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
     return this.reactivityWakeup.wakeUpPath(path, value, options, behaviorUpdater);
@@ -191,20 +159,10 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   wakeUpMutationPathNormalized(
     normalized: string,
     value: unknown,
-    options: WakeUpPathOptions = {},
+    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
     return this.reactivityWakeup.wakeUpPathNormalized(normalized, value, options, behaviorUpdater);
-  }
-
-  performMutationWithWakeUp(
-    path: string,
-    value: unknown,
-    mutateFn: () => void,
-    options: WakeUpPathOptions = {},
-    behaviorUpdater?: (path: string, value: unknown) => void
-  ): boolean {
-    return this.reactivityWakeup.performMutationWithWakeUp(path, value, mutateFn, options, behaviorUpdater);
   }
 
   wakeUpArrayMutation(
@@ -226,26 +184,17 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   wakeUpVersionPathWithMode(path: string, mode: StoreWakeupMode): void {
     const normalized = PathUtils.normalizePath(path);
-    this.getWakeupModeHandler(mode)(normalized);
-  }
-
-  private getWakeupModeHandler(mode: StoreWakeupMode): (normalized: string) => void {
-    const canonicalMode = STORE_WAKEUP_MODE_ALIASES[mode];
-    const handler = canonicalMode ? this.wakeupModeHandlers[canonicalMode] : undefined;
+    const handler = this.wakeupModeHandlers[mode];
     if (!handler) throw new Error(`Unsupported wakeup mode: ${String(mode)}`);
-    return handler;
+    handler(normalized);
   }
 
   // Type-safe selection API: select(fn) and computedOf(fn)
   private getStoreProxy(): TState {
-    if (this._storeProxy) {
-      this.usingComputedStoreFallback = false;
-      return this._storeProxy;
-    }
     try {
-      this._storeProxy = this.signalStore.useStore(this.storeName) as unknown as TState;
+      this._storeProxy ??= this.signalStore.useStore(this.storeName);
       this.usingComputedStoreFallback = false;
-      return this._storeProxy;
+      return this._storeProxy as TState;
     } catch {
       // Fallback for standalone CreateStore instances (no proxy registered)
       this.usingComputedStoreFallback = true;
@@ -364,30 +313,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   // ------------------
   // Proxy cache operations (delegated to manager)
   // ------------------
-  getProxyFromCache(path: string): ProxyCallable | undefined {
-    return this.proxyCacheManager.get(path);
-  }
-
-  getOrCreateProxy<T>(
-    path: string,
-    createProxyFn: (path: string, value: T) => ProxyCallable,
-    getValueFn: (path: string) => T | undefined
-  ): ProxyCallable | undefined {
-    return this.proxyCacheManager.getOrCreate(path, createProxyFn, getValueFn);
-  }
-
-  addProxyToCache(path: string, proxy: ProxyCallable): void {
-    this.proxyCacheManager.add(path, proxy);
-  }
-
-  deleteProxyFromCache(path: string): void {
-    this.proxyCacheManager.delete(path);
-  }
-
-  isProxyInCache(path: string): boolean {
-    return this.proxyCacheManager.isCached(path);
-  }
-
   hasIndexedProxyCacheFrom(path: string, startIndex: number): boolean {
     return this.proxyCacheManager.hasIndexedChildAtOrAfter(path, startIndex);
   }
@@ -400,18 +325,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return this.hasIndexedPathFromKeys(this._behaviorSvc?.keys() ?? [], path, startIndex)
       || this.hasIndexedPathFromKeys(this._computedSvc?.keys() ?? [], path, startIndex)
       || this.hasIndexedPathFromKeys(this._versionSvc?.keys() ?? [], path, startIndex);
-  }
-
-  getProxyCacheKeys(): string[] {
-    return this.proxyCacheManager.keys();
-  }
-
-  getProxyCache(): { [key: string]: WeakRef<ProxyCallable> } {
-    return this.proxyCacheManager.entries();
-  }
-
-  cleanupProxyCache(pathPrefix?: string): void {
-    this.proxyCacheManager.cleanup(pathPrefix);
   }
 
   getProxyCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[] } {
@@ -462,28 +375,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   // Control BehaviorSubject update propagation on writes
   setBehaviorUpdatesEnabled(enabled: boolean) { this.behaviorUpdatesEnabled = !!enabled; }
-  getBehaviorUpdatesEnabled(): boolean { return this.behaviorUpdatesEnabled; }
-
-  // Emituje statystyki subskrypcji behavior store przez unified emitter
-  emitBehaviorSubscriptionStats(): void {
-    const stats = this.behaviorSvc.getSubscriptionStats();
-    this.devToolsEmitter.emit(this.storeName, {
-      type: 'BEHAVIOR_STORE_UPDATE',
-      payload: {
-        storeName: this.storeName,
-        action: 'update',
-        path: 'behavior-subscriptions',
-        keys: [],
-        ...stats,
-        graph: undefined
-      }
-    });
-  }
-
-  // Ręczne emitowanie statystyk (do wywołania z zewnątrz)
-  emitBehaviorStats(): void {
-    this.emitBehaviorSubscriptionStats();
-  }
 
   // ------------------
   // Observable cache helpers
@@ -551,36 +442,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   // ------------------
   // Behavior operations
   // ------------------
-  addToBehaviorStoreIfExists(path: string): void {
-    this._behaviorSvc?.getIfExists(path);
-  }
-
-  getObservableIfExists(path: string): Observable<unknown> | undefined {
-    const subject = this._behaviorSvc?.getIfExists(path);
-    return subject ? subject.asObservable() : undefined;
-  }
-
-  addToBehaviorStore(path: string): void {
-    this.behaviorSvc.add(path);
-  }
-
-  // Subscriptions are tracked inside BehaviorService via a tracked Observable wrapper.
-  addBehaviorSubscription(path: string): Observable<unknown> {
-    return this.behaviorSvc.getTrackedObservable(path);
-  }
-
-  removeBehaviorSubscription(_path: string): void {
-    // No-op: unsubscribe tracking handled by BehaviorService.
-  }
-
-  hasActiveSubscriptions(path: string): boolean {
-    return this._behaviorSvc?.hasActiveSubscriptions(path) ?? false;
-  }
-
-  getSubscriptionCount(path: string): number {
-    return this._behaviorSvc?.getSubscriptionCount(path) ?? 0;
-  }
-
   // Pobierz observable z pipe i automatycznie śledź subskrypcje
   getObservableWithPipe<T = unknown>(
     path: string,
@@ -605,17 +466,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     this._behaviorSvc?.updateByPrefix(pathPrefix, options);
   }
 
-  updateDescendantBehaviorsByPrefix(pathPrefix: string): void {
-    if (!this.behaviorUpdatesEnabled) return;
-    if (!pathPrefix || typeof pathPrefix !== 'string') return;
-    this._behaviorSvc?.updateDescendantsByPrefix(pathPrefix);
-  }
-
-  syncDescendantsAfterBranchMutation(pathPrefix: string): void {
-    if (!pathPrefix || typeof pathPrefix !== 'string') return;
-    this.reactivityWakeup.wakeUpBranch(pathPrefix);
-  }
-
   // ------------------
   // Helper methods for checking and managing stores
   // ------------------
@@ -625,14 +475,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   isComputedExists(path: string): boolean {
     return this.computedSvc.isExists(path);
-  }
-
-  deleteBehavior(path: string): void {
-    this.behaviorSvc.delete(path);
-  }
-
-  deleteComputed(path: string): void {
-    this.deleteFromComputeStore(path);
   }
 
   // Removed: getBehaviorKeys() - moved to DevService
@@ -650,13 +492,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     this._behaviorSvc?.cleanup(pathPrefix);
   }
 
-  // Wyczyść nieaktywne węzły (bez subskrypcji)
-  cleanupInactiveBehaviorNodes(pathPrefix?: string): void {
-    this._behaviorSvc?.cleanupInactive(pathPrefix);
-  }
-
-  // removed tree walk cleanup
-
   cleanupComputedStore(pathPrefix?: string): void {
     this.computedSvc.cleanup(pathPrefix);
   }
@@ -668,7 +503,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     this._versionSvc?.cleanup();
     this.versionBumpCoordinator.destroy();
     this.proxyCacheManager.reset();
-    this.clearPathSegmentCache('');
     this.observableMethodCache = Object.create(null);
     this._storeProxy = undefined;
     this.usingComputedStoreFallback = false;
@@ -683,16 +517,8 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return v;
   }
 
-  bumpVersionsFor(path: string): void {
-    this.versionBumpCoordinator.bumpPath(path);
-  }
-
   bumpVersionsForNormalized(normalized: string): void {
     this.versionBumpCoordinator.bumpPathNormalized(normalized);
-  }
-
-  bumpDescendantVersionsFor(pathPrefix: string): void {
-    this.versionBumpCoordinator.bumpDescendants(pathPrefix);
   }
 
   bumpDescendantVersionsForNormalized(normalizedPrefix: string): void {
@@ -702,14 +528,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   cleanupVersionStore(pathPrefix?: string): void {
     this._versionSvc?.cleanup(pathPrefix);
   }
-
-  /** @deprecated Kept for compatibility; use normal mutation wake-up paths instead. */
-  bumpVersionsFromPatches(patches: Array<{ op: string; path: Array<string | number> }>): void {
-    this.versionBumpCoordinator.bumpFromPatches(patches);
-  }
-
-  // Version graph/keys helpers for DevTools
-  getVersionKeys(): string[] { return this._versionSvc?.keys() ?? []; }
 
   // Removed: getBehaviorSubscriptionStats() - moved to DevService
 
@@ -732,21 +550,5 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
       if (Number.isInteger(index) && index >= startIndex) return true;
     }
     return false;
-  }
-
-  // ===== Auto-tracked multi-path computed =====
-  createAutoTrackedComputed<T = unknown>(
-    pathKey: string,
-    derive: (get: (path: string) => unknown) => T
-  ): Signal<T> {
-    return this.computedSvc.createAutoTrackedComputed(pathKey, derive);
-  }
-
-  getAutoComputed<T = unknown>(pathKey: string): Signal<T> | undefined {
-    return this.computedSvc.getAutoComputed(pathKey);
-  }
-
-  deleteAutoComputed(pathKey: string): void {
-    this.computedSvc.deleteAutoComputed(pathKey);
   }
 }

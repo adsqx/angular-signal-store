@@ -38,16 +38,6 @@ export class CursorManager {
   }
 
   /**
-   * Get cache statistics for performance monitoring.
-   */
-  getCacheStats(): { pathPlanCache: ReturnType<FlatStoreMap<PathPlan>['getCacheStats']>; cursorActive: boolean } {
-    return {
-      pathPlanCache: this.pathSetPlanCache.getCacheStats(),
-      cursorActive: this.cursor.active,
-    };
-  }
-
-  /**
    * Clear all caches (useful for testing or memory management).
    */
   clearCaches(): void {

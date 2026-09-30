@@ -22,18 +22,25 @@ import {
   tryFastStructuralMutation,
 } from '@adsq/jsnq/core/pipeline-fastpath';
 import { registerJsnqBridge } from './core/jsnq-contract';
-import type { JsnqBridge } from './core/jsnq-contract';
+import type { FastMutationResult, JsnqBridge } from './core/jsnq-contract';
+
+// The core contract is untyped (`unknown`) so it never imports engine types. Where the engine
+// is stricter than the contract, the value is narrowed here, in exactly these two helpers.
+type EngineArg<F extends (...args: never[]) => unknown, N extends number> = Parameters<F>[N];
+const asEngine = <T>(value: unknown): T => value as T;
+const asResult = (value: unknown): FastMutationResult | null | undefined =>
+  value as FastMutationResult | null | undefined;
 
 const angularJsnqBridge: JsnqBridge = {
-  createPipeline: (data, options) => new JsnqPipeline(data as never, options),
+  createPipeline: (data, options) =>
+    new JsnqPipeline(asEngine<ConstructorParameters<typeof JsnqPipeline>[0]>(data), options),
   tryFastPipelineMutation: (value, operators, options) =>
-    tryFastPipelineMutation(value as never, operators as never, options as never) as never,
+    asResult(tryFastPipelineMutation(value, operators, options)),
   tryFastStructuralMutation: (value, intent) =>
-    tryFastStructuralMutation(value as never, intent as never) as never,
-  collectPipelineIntent: (operators) => collectPipelineIntent(operators as never) as never,
-  isDeepSugarAction: (action) => isDeepSugarAction(action as never),
-  applyDeepSugarPatch: (value, criteria, actions) =>
-    applyDeepSugarPatch(value as never, criteria as never, actions as never) as never,
+    asResult(tryFastStructuralMutation(value, asEngine<EngineArg<typeof tryFastStructuralMutation, 1>>(intent))),
+  collectPipelineIntent,
+  isDeepSugarAction,
+  applyDeepSugarPatch: (value, criteria, actions) => asResult(applyDeepSugarPatch(value, criteria, actions)),
 };
 
 registerJsnqBridge(angularJsnqBridge);

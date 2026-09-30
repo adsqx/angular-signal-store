@@ -9,14 +9,15 @@ export interface WakeUpHooks {
   behaviorUpdatesEnabled: () => boolean;
   updateBehavior: (path: string, value: unknown) => void;
   ensureBehavior: (path: string) => void;
-  bumpVersion: (path: string) => void;
   bumpVersionNormalized: (normalized: string) => void;
-  updateDescendantBehaviors: (pathPrefix: string) => void;
-  bumpDescendantVersions: (pathPrefix: string) => void;
   bumpDescendantVersionsNormalized: (normalizedPrefix: string) => void;
   clearProxyCache: (pathPrefix: string) => void;
   updateBehaviorByPrefix: (pathPrefix: string, options?: { skipSelf?: boolean }) => void;
 }
+
+/** Shared defaults: the write hot path must not allocate an options object per call. */
+export const NO_WAKE_OPTIONS: WakeUpPathOptions = Object.freeze({});
+const SKIP_SELF = Object.freeze({ skipSelf: true });
 
 export class ReactivityWakeupService {
   constructor(private readonly hooks: WakeUpHooks) {}
@@ -24,7 +25,7 @@ export class ReactivityWakeupService {
   wakeUpPath(
     path: string,
     value: unknown,
-    options: WakeUpPathOptions = {},
+    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
     return this.wakeUpPathNormalized(PathUtils.normalizePath(path), value, options, behaviorUpdater);
@@ -33,7 +34,7 @@ export class ReactivityWakeupService {
   wakeUpPathNormalized(
     normalized: string,
     value: unknown,
-    options: WakeUpPathOptions = {},
+    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
     const behaviorsEnabled = this.hooks.behaviorUpdatesEnabled();
@@ -46,17 +47,6 @@ export class ReactivityWakeupService {
     return behaviorsEnabled;
   }
 
-  performMutationWithWakeUp(
-    path: string,
-    value: unknown,
-    mutateFn: () => void,
-    options: WakeUpPathOptions = {},
-    behaviorUpdater?: (path: string, value: unknown) => void
-  ): boolean {
-    mutateFn();
-    return this.wakeUpPath(path, value, options, behaviorUpdater);
-  }
-
   wakeUpArrayPath(
     path: string,
     value: unknown,
@@ -64,22 +54,18 @@ export class ReactivityWakeupService {
     behaviorUpdater?: (path: string, value: unknown) => void
   ): void {
     const normalized = PathUtils.normalizePath(path);
-    this.hooks.bumpVersion(normalized);
+    this.hooks.bumpVersionNormalized(normalized);
     afterVersion?.();
     (behaviorUpdater ?? this.hooks.updateBehavior)(normalized, value);
-    this.hooks.updateBehaviorByPrefix(normalized, { skipSelf: true });
+    this.hooks.updateBehaviorByPrefix(normalized, SKIP_SELF);
   }
 
   wakeUpVersionOnly(path: string): void {
-    this.hooks.bumpVersion(PathUtils.normalizePath(path));
+    this.hooks.bumpVersionNormalized(PathUtils.normalizePath(path));
   }
 
-  wakeUpBranch(pathPrefix: string): void {
-    this.wakeUpBranchNormalized(PathUtils.normalizePath(pathPrefix));
-  }
-
-  wakeUpBranchNormalized(normalized: string): void {
-    this.hooks.updateDescendantBehaviors(normalized);
+  private wakeUpBranchNormalized(normalized: string): void {
+    this.hooks.updateBehaviorByPrefix(normalized, SKIP_SELF);
     this.hooks.bumpDescendantVersionsNormalized(normalized);
     this.hooks.clearProxyCache(normalized);
   }
