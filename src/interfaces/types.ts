@@ -25,30 +25,3 @@ export type ProxyCallable<T = unknown> = CallableProxy<T> & {
 export type StoreProxy<T extends StoreData = StoreData> = {
   [K in keyof T]: T[K] extends (...args: unknown[]) => unknown ? T[K] : ProxyCallable<T[K]>;
 } & IStoreInstance<T>;
-
-/**
- * type vocabulary for the $-namespace (reactive jsnq read/subscribe surface)
- * exposed at runtime by every proxy node (createSnapshotQueryMethod / createLiveQueryMethod /
- * proxyApiHandlers). Mirrors solid-store's StoreLeaf $-methods. These are intentionally NOT wired
- * into the pervasive `CallableProxy<T>` type (which, by existing convention, also leaves the bare
- * `mutate`/`query`/`pipeline` runtime methods untyped) — wiring them there is a separate, wider
- * type change. Until then, use these shapes when you want the $-surface typed.
- */
-export type StoreSubscription = { unsubscribe(): void; dispose(): void };
-
-export type StoreSubscribeOptions<T> = {
-  equals?: (a: T, b: T) => boolean;
-  immediate?: boolean;
-  onError?: (error: unknown) => void;
-};
-
-/** Reactive query handle: callable accessor for the current result (read in computed/effect/template). */
-export type StoreLiveQuery<T> = () => T;
-
-export interface StoreDollarApi {
-  $query(...ops: unknown[]): unknown[];
-  $queryOne(...ops: unknown[]): unknown;
-  $liveQuery(...ops: unknown[]): StoreLiveQuery<unknown[]>;
-  $liveQueryOne(...ops: unknown[]): StoreLiveQuery<unknown>;
-  $mutate(...ops: unknown[]): unknown;
-}

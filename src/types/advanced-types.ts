@@ -1,22 +1,7 @@
 // src/app/store/types/advanced-types.ts
 
-/**
- * Advanced TypeScript types for type-safe store operations.
- * These types provide compile-time safety for path-based operations.
- */
-
-// Base utility types
-export type Primitive = string | number | boolean | null | undefined;
-export type NonEmptyString<T extends string> = T extends '' ? never : T;
-
-// Object key extraction with proper constraints
-export type Keys<T> = T extends readonly (infer U)[]
-  ? U extends Record<PropertyKey, unknown>
-    ? keyof U
-    : never
-  : T extends Record<PropertyKey, unknown>
-    ? keyof T
-    : never;
+// Advanced TypeScript types for type-safe store operations.
+// These types provide compile-time safety for path-based operations.
 
 // Helper types for path construction. Path unions must stay bounded for TS performance;
 // PathValue below resolves concrete string literals independently from this autocomplete depth.
@@ -60,9 +45,6 @@ export type StrictPath<T> = T extends Record<string, unknown>
         : never
     }[keyof T]
   : string;
-
-// Union of StrictPath and flexible string for gradual typing
-export type SafePath<T> = StrictPath<T> | string;
 
 // Enhanced path value extraction with better type inference
 export type PathValue<T, P extends string> = P extends `${infer Key}.${infer Rest}`
@@ -129,13 +111,9 @@ export interface SpliceOperation {
   items: unknown[];
 }
 
-// Type guards for runtime validation
-export type TypeGuard<T> = (value: unknown) => value is T;
-
 // Observable and Signal types (re-export for convenience)
 export type ObservableType<T> = import('rxjs').Observable<T>;
 export type SignalType<T> = import('@angular/core').Signal<T>;
-export type WritableSignalType<T> = import('@angular/core').WritableSignal<T>;
 export type BehaviorSubjectType<T> = import('rxjs').BehaviorSubject<T>;
 
 // Store instance constraint
@@ -145,26 +123,6 @@ export type StoreData = Record<string, unknown>;
 export function isNumericSegment(seg: string | undefined): boolean {
   return !!seg && /^\d+$/.test(seg);
 }
-
-// Enhanced error types
-export interface StoreError {
-  type: 'PATH_ERROR' | 'TYPE_ERROR' | 'VALIDATION_ERROR' | 'OPERATION_ERROR';
-  message: string;
-  path?: string;
-  originalError?: Error;
-}
-
-// DevTools event types
-export interface DevToolsEvent<T = unknown> {
-  type: string;
-  payload: T;
-  timestamp: number;
-  storeName?: string;
-}
-
-// Utility type for function with this context
-export type BoundMethod<T, Args extends unknown[] = unknown[], Return = unknown> =
-  (this: T, ...args: Args) => Return;
 
 // Helper type for function detection
 type IsFunction<T> = T extends (...args: unknown[]) => unknown ? true : false;
@@ -176,44 +134,8 @@ export type CallableProxy<T> = T & {
   [K in keyof T]: IsFunction<T[K]> extends true ? T[K] : CallableProxy<T[K]>;
 };
 
-// Enhanced proxy configuration
-export interface ProxyConfig<T = unknown> {
-  pathPrefix: string;
-  exposeStoreMethods: boolean;
-  originalNestedValue?: T;
-  resolveFn: (path: string) => unknown;
-  nestedProxyFactory: (path: string, value: unknown) => unknown;
-  rxjsAllowedOnRoot?: boolean;
-  setFn?: (path: string, value: unknown) => void;
-  deleteFn?: (path: string) => void;
-  cleanupFn?: () => void;
-}
-
-// Type-safe setter function
-export type TypeSafeSetter<T> = <P extends ValidPath<T>>(
-  path: P,
-  value: PathValue<T, P>
-) => void;
-
-// Type-safe getter function  
-export type TypeSafeGetter<T> = <P extends ValidPath<T>>(
-  path: P
-) => PathValue<T, P> | undefined;
-
 // Branded types for additional type safety
 export type StorePath = string & { readonly __brand: unique symbol };
-export type StoreValue = unknown & { readonly __brand: unique symbol };
 
 // Create branded path
 export const createStorePath = (path: string): StorePath => path as StorePath;
-
-// Utility to check if type is array
-export type IsArray<T> = T extends readonly unknown[] ? true : false;
-
-// Extract nested object type
-export type NestedObjectType<T, P extends string> = PathValue<T, P> extends Record<string, unknown>
-  ? PathValue<T, P>
-  : never;
-
-// Check if path points to array
-export type IsArrayPath<T, P extends string> = IsArray<PathValue<T, P>>;

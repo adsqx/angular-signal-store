@@ -3,9 +3,10 @@ import type { CreateStoreService } from '../create-store.core';
 import { BaseManager } from './base.manager';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import { CleanupScheduler } from '../../utils/cleanup-scheduler';
-import { StoreConfig } from '../../utils/store-config';
 import { PathUtils } from '../../utils/path-utils';
 import { StoreData } from '../../types/advanced-types';
+
+const BEHAVIOR_CLEANUP_DELAY_MS = 50;
 
 class TrackedBehaviorSubject<T> extends BehaviorSubject<T> {
   constructor(
@@ -64,7 +65,7 @@ export class BehaviorService<TStore extends StoreData = StoreData> extends BaseM
         this.removeBehaviorNode(path, 'cleanup');
         this.emitSubscriptionStats();
       },
-      StoreConfig.BEHAVIOR_CLEANUP_DELAY_MS
+      BEHAVIOR_CLEANUP_DELAY_MS
     );
   }
 
