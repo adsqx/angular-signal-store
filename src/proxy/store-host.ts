@@ -8,6 +8,7 @@ import type { CreateStoreService } from '../core/create-store.core';
  */
 export interface StoreHost extends IStoreInstance<StoreData> {
   createServiceGetter?: CreateStoreService;
+  getCreateService?: CreateStoreService;
   preciseMutationWake?: boolean;
   commitMutationPrecise?(branch: string, value: unknown, relPaths: readonly string[]): void;
 }
@@ -20,4 +21,9 @@ export function asHost<T extends StoreData>(store: IStoreInstance<T>): StoreHost
 /** Current value at `path`, or the root object for the empty path. */
 export function readBranch(host: StoreHost, path: string): unknown {
   return path ? host.readStore(path) : host.store;
+}
+
+/** The reactive service behind the host (`createServiceGetter`, with its legacy alias as fallback). */
+export function serviceOf(host: StoreHost): CreateStoreService {
+  return (host.createServiceGetter ?? host.getCreateService) as CreateStoreService;
 }

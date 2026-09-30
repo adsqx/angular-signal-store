@@ -50,6 +50,28 @@ export function directDeleteValue(
   host.setValue(path, undefined);
 }
 
+/** What a proxy node needs to route a write: the host, the strictness flags, optional custom writers. */
+export interface WritePolicy {
+  readonly host: StoreHost;
+  readonly strictInvalidPath: boolean;
+  readonly strictDeleteUndefined: boolean;
+  readonly setFn?: (path: string, value: unknown) => void;
+  readonly deleteFn?: (path: string) => void;
+}
+
+/** `proxy.key = value`: a dedicated `setFn` wins, otherwise the validated handler fallback. */
+export function applySet(policy: WritePolicy, path: string, value: unknown): void {
+  if (value === undefined && policy.strictDeleteUndefined) rejectUndefinedWrite(path);
+  if (policy.setFn) policy.setFn(path, value);
+  else directSetValue(policy.host, path, value, policy.strictInvalidPath);
+}
+
+/** `delete proxy.key`: a dedicated `deleteFn` is trusted to clean up safely, even in strict mode. */
+export function applyDelete(policy: WritePolicy, path: string): void {
+  if (policy.deleteFn) policy.deleteFn(path);
+  else directDeleteValue(policy.host, path, policy.strictInvalidPath, policy.strictDeleteUndefined);
+}
+
 /** Root-level writers: prefer the store's fast setter, route `undefined` to delete. */
 export function createWriteFns(host: StoreHost, config: WriteConfig) {
   const { strictInvalidPath, strictDeleteUndefined, warn } = config;

@@ -3,6 +3,7 @@ import type { CreateStoreService } from '../create-store.core';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import type { ManagerCtx } from './manager-ctx';
 import { PathUtils } from '../../utils/path-utils';
+import { readBySegments } from '../../utils/abstracts/path-reader';
 import { buildMethodHashSegment } from '../../utils/array-query-key.utils';
 import { executeArrayQuery } from '../../utils/array-query-executor';
 import type {
@@ -78,7 +79,7 @@ export class ComputedService<TStore extends StoreData = StoreData> {
         cachedVersionPath = versionPath;
       }
       versionRef();
-      return project(this.ctx.reader.readBySegments(this.ctx.root, pathSegments));
+      return project(readBySegments(this.ctx.root, pathSegments));
     });
   }
 
