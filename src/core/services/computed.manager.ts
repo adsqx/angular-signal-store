@@ -1,6 +1,5 @@
 import { computed, type Signal, type WritableSignal } from '@angular/core';
 import type { CreateStoreService } from '../create-store.core';
-import { PathUtils } from '../../utils/path-utils';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import { BaseManager } from './base.manager';
 import { buildMethodHashSegment } from '../../utils/array-query-key.utils';
@@ -16,7 +15,7 @@ import type {
   PathValue
 } from '../../types/advanced-types';
 
-type ArrayQueryResult<E, M extends ArrayQueryMethod | 'length'> =
+export type ArrayQueryResult<E, M extends ArrayQueryMethod | 'length'> =
   M extends 'find' ? E | undefined :
   M extends 'findIndex' | 'indexOf' ? number :
   M extends 'filter' | 'map' ? E[] :
@@ -25,7 +24,7 @@ type ArrayQueryResult<E, M extends ArrayQueryMethod | 'length'> =
   M extends 'length' ? number :
   unknown;
 
-type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
+export type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
   M extends 'find' | 'findIndex' | 'filter' | 'some' | 'every' ? PredicateFn<E> :
   M extends 'map' ? MapFn<E, unknown> :
   M extends 'reduce' ? ReduceFn<E, unknown> :
@@ -56,27 +55,30 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
     if (this.computedStore.has(path)) return;
 
     const normalizedPath = this.normalizePath(path);
+    const s = this.versionedComputed(normalizedPath, (value) =>
+      this.core.getCloneComputedOutputs() ? cloneShallow(value) : value
+    );
+    this.core.setSignalInProxyCache(normalizedPath, s);
+    this.computedStore.set(normalizedPath, s);
+  }
 
+  /**
+   * `computed` over the value at `normalizedPath`, invalidated by that path's version signal.
+   * The resolved version signal is cached so steady-state re-evaluation skips the lookup.
+   */
+  private versionedComputed<R>(normalizedPath: string, project: (value: unknown) => R): Signal<R> {
     const pathSegments = this.core.getPathSegments(normalizedPath);
     let cachedVersionPath: string | undefined;
     let versionRef: WritableSignal<number> | undefined;
-    const s = computed(() => {
+    return computed(() => {
       const versionPath = this.core.resolveVersionPathNormalized(normalizedPath);
       if (!versionRef || cachedVersionPath !== versionPath) {
         versionRef = this.core.getVersion(versionPath);
         cachedVersionPath = versionPath;
       }
-      versionRef!();
-      const value = this.core.fastReadBySegments(this.storeRef, pathSegments);
-      if (this.core.getCloneComputedOutputs()) {
-        if (value && typeof value === 'object') {
-          return Array.isArray(value) ? [...(value as unknown[])] : { ...(value as Record<string, unknown>) };
-        }
-      }
-      return value;
+      versionRef();
+      return project(this.core.fastReadBySegments(this.storeRef, pathSegments));
     });
-    this.core.setSignalInProxyCache(normalizedPath, s as unknown as Signal<unknown>);
-    this.computedStore.set(normalizedPath, s);
   }
 
   remove(path: string): void {
@@ -117,35 +119,23 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
     ...args: unknown[]
   ): Signal<R> | undefined {
     const normalizedPath = this.normalizePath(path);
-    const baseSegments = Array.from(this.core.getPathSegments(normalizedPath));
     if (!super.pathHasValue(normalizedPath)) return undefined;
 
     const keySegment = buildMethodHashSegment(method, predicate, args);
-    const fullPath = [...baseSegments, '$arrayQuery', keySegment].join('.');
+    const fullPath = [...this.core.getPathSegments(normalizedPath), '$arrayQuery', keySegment].join('.');
 
     const existing = this.computedStore.get(fullPath);
     if (existing) return existing as Signal<R>;
 
-    const pathSegments = this.core.getPathSegments(normalizedPath);
-    let cachedVersionPath: string | undefined;
-    let versionRef: WritableSignal<number> | undefined;
-    const s = computed(() => {
-      const versionPath = this.core.resolveVersionPathNormalized(normalizedPath);
-      if (!versionRef || cachedVersionPath !== versionPath) {
-        versionRef = this.core.getVersion(versionPath);
-        cachedVersionPath = versionPath;
-      }
-      versionRef!();
-      const arrayRef = this.core.fastReadBySegments(this.storeRef, pathSegments);
+    const s = this.versionedComputed(normalizedPath, (arrayRef): R | undefined => {
       if (!Array.isArray(arrayRef)) return undefined;
       try {
-        return this.safeArrayQuery<E, M>(arrayRef as E[], predicate, method, ...args) as R;
-      } catch (e) {
-        console.warn('ComputedService array query error:', e);
+        return executeArrayQuery(arrayRef as E[], method, predicate, args, { cloneFoundObject: true }) as R;
+      } catch {
         return undefined;
       }
     });
-    this.core.setSignalInProxyCache(fullPath, s as unknown as Signal<unknown>);
+    this.core.setSignalInProxyCache(fullPath, s);
     this.computedStore.set(fullPath, s);
 
     this.emitDevTools({
@@ -153,7 +143,7 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
       payload: { storeName: this.storeName, action: 'add', path: fullPath, keys: this.keys() }
     });
 
-    return this.computedStore.get(fullPath) as Signal<R>;
+    return s as Signal<R>;
   }
 
   registerPipelineComputed(path: string, signalRef: Signal<unknown>): void {
@@ -169,97 +159,9 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
       payload: { storeName: this.storeName, action: operation, path: normalizedPath, keys: this.keys() }
     });
   }
+}
 
-  private safeArrayQuery<E, M extends ArrayQueryMethod | 'length'>(
-    arrayRef: E[],
-    predicate: ArrayQueryPredicate<E, M>,
-    method: M,
-    ...args: unknown[]
-  ): ArrayQueryResult<E, M> {
-    try {
-      return executeArrayQuery(arrayRef, method, predicate, args, { cloneFoundObject: true }) as ArrayQueryResult<E, M>;
-    } catch {
-      return undefined as ArrayQueryResult<E, M>;
-    }
-  }
-
-  // Auto-tracked multi-path computed
-  createAutoTrackedComputed<T = unknown>(pathKey: string, derive: (get: (path: string) => unknown) => T): Signal<T> {
-    const full = this.getAutoComputedKey(pathKey);
-    const existing = this.computedStore.get(full) as Signal<T> | undefined;
-    if (existing) return existing;
-
-    const computedSignal = !this.core.getTrackReads()
-      ? computed(() => {
-          const base = this.core.resolveVersionPathNormalized(PathUtils.normalizePath(pathKey));
-          this.core.getVersion(base)();
-          const result = derive((p: string) =>
-            PathUtils.getByPath(this.storeRef as Record<string, unknown>, PathUtils.normalizePath(p))
-          );
-          if (result && typeof result === 'object') {
-            return (Array.isArray(result) ? [...(result as unknown[])] : { ...(result as Record<string, unknown>) }) as T;
-          }
-          return result;
-        })
-      : (() => {
-          const depRefs = new Map<string, WritableSignal<number>>();
-          return computed(() => {
-            this.core.startCollect();
-            const get = (path: string): unknown => {
-              const n = PathUtils.normalizePath(path);
-              this.core.registerRead(n);
-              return PathUtils.getByPath(this.storeRef as Record<string, unknown>, n);
-            };
-            const result = derive(get);
-            const collected = this.core.stopCollect() || new Set<string>();
-            const newDeps = new Set<string>();
-            if (collected.size > 0) {
-              for (const p of collected) {
-                const normalized = PathUtils.normalizePath(p);
-                const base = this.core.resolveVersionPathNormalized(normalized);
-                newDeps.add(base);
-                const directParent = this.core.getBumpNumericParent()
-                  ? PathUtils.directNumericParentPath(normalized)
-                  : null;
-                if (directParent) newDeps.add(directParent);
-              }
-            }
-            for (const d of newDeps) {
-              if (!depRefs.has(d)) depRefs.set(d, this.core.getVersion(d));
-            }
-            for (const key of Array.from(depRefs.keys())) {
-              if (!newDeps.has(key)) depRefs.delete(key);
-            }
-            depRefs.forEach((ref) => ref());
-            if (result && typeof result === 'object') {
-              return (Array.isArray(result) ? [...(result as unknown[])] : { ...(result as Record<string, unknown>) }) as T;
-            }
-            return result;
-          });
-        })();
-
-    try {
-      this.core.setSignalInProxyCache(full, computedSignal as unknown as Signal<unknown>);
-    } catch (e) {
-      console.warn('ComputedService setSignalInProxyCache error:', e);
-    }
-
-    this.computedStore.set(full, computedSignal as Signal<unknown>);
-    return computedSignal as Signal<T>;
-  }
-
-  getAutoComputed<T = unknown>(pathKey: string): Signal<T> | undefined {
-    const key = this.getAutoComputedKey(pathKey);
-    return (this.computedStore.get(key) as Signal<T>) || undefined;
-  }
-
-  deleteAutoComputed(pathKey: string): void {
-    const key = this.getAutoComputedKey(pathKey);
-    this.remove(key);
-  }
-
-  private getAutoComputedKey(pathKey: string): string {
-    const keySegments = Array.from(this.core.getPathSegments(pathKey));
-    return ['$autoComputed', ...keySegments].join('.');
-  }
+function cloneShallow(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  return Array.isArray(value) ? [...value] : { ...(value as Record<string, unknown>) };
 }

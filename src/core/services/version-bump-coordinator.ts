@@ -4,45 +4,37 @@ import { VersionBumpPolicy } from './version-bump-policy';
 
 export interface VersionBumpHooks {
   hasNodes: () => boolean;
-  hasExistingNodes: () => boolean;
   keys: () => string[];
   updateIfExists: (path: string) => void;
-  cleanup: (pathPrefix?: string) => void;
 }
 
-export interface VersionBumpCoordinatorCacheMetrics {
-  ancestorPathCache: {
-    size: number;
-    maxSize: number;
-    hits: number;
-    misses: number;
-    evictions: number;
-    hitRate: number;
-  };
-}
-
-type ExplicitBumpTarget = 'grained' | 'leaf';
-type PolicyBumpTarget = 'partial' | 'branch';
 type BumpTargetResolver = (normalized: string) => string[];
+
+interface AncestorEntry {
+  /** Ancestors in `enumerateAncestors` order. */
+  ordered: string[];
+  /** Same paths reversed; built on first leaf bump so the hot path never copies. */
+  reversed?: string[];
+}
+
+/** Shared empty result; `applyTargets` returns before touching it. */
+const NO_TARGETS: string[] = [];
+const MAX_ANCESTOR_CACHE_SIZE = 1000;
 
 export class VersionBumpCoordinator {
   // Insertion-order FIFO cache. Version target calculation is pure, so eviction only affects performance.
-  private readonly ancestorPathCache = new Map<string, string[]>();
-  private static readonly MAX_ANCESTOR_CACHE_SIZE = 1000;
-  private ancestorCacheHits = 0;
-  private ancestorCacheMisses = 0;
-  private ancestorCacheEvictions = 0;
-  private readonly explicitBumpTargets: Record<ExplicitBumpTarget, BumpTargetResolver> = {
-    grained: (normalized) => [normalized],
-    leaf: (normalized) => [...this.getAncestorPaths(normalized)].reverse(),
+  private readonly ancestorCache = new Map<string, AncestorEntry>();
+
+  private readonly exactTargets: BumpTargetResolver = (normalized) => [normalized];
+  private readonly leafTargets: BumpTargetResolver = (normalized) => {
+    const entry = this.ancestorEntry(normalized);
+    return (entry.reversed ??= [...entry.ordered].reverse());
   };
-  private readonly policyBumpTargets: Record<PolicyBumpTarget, BumpTargetResolver> = {
-    partial: (normalized) => {
-      this.hooks.updateIfExists(normalized);
-      return [];
-    },
-    branch: (normalized) => this.getAncestorPaths(normalized),
+  private readonly partialTargets: BumpTargetResolver = (normalized) => {
+    this.hooks.updateIfExists(normalized);
+    return NO_TARGETS;
   };
+  private readonly branchTargets: BumpTargetResolver = (normalized) => this.ancestorEntry(normalized).ordered;
 
   constructor(
     private readonly policy: VersionBumpPolicy,
@@ -61,36 +53,20 @@ export class VersionBumpCoordinator {
     });
   }
 
-  bumpPath(path: string): void {
-    this.bumpWithTargets(path, this.getPolicyBumpTarget());
-  }
-
   bumpPathNormalized(normalized: string): void {
-    this.bumpWithNormalizedTargets(normalized, this.getPolicyBumpTarget());
-  }
-
-  bumpExact(path: string): void {
-    this.bumpWithTargets(path, this.explicitBumpTargets.grained);
+    this.bump(normalized, this.policy.getPartialInvalidation() ? this.partialTargets : this.branchTargets);
   }
 
   bumpExactNormalized(normalized: string): void {
-    this.bumpWithNormalizedTargets(normalized, this.explicitBumpTargets.grained);
-  }
-
-  bumpLeafBranch(path: string): void {
-    this.bumpWithTargets(path, this.explicitBumpTargets.leaf);
+    this.bump(normalized, this.exactTargets);
   }
 
   bumpLeafBranchNormalized(normalized: string): void {
-    this.bumpWithNormalizedTargets(normalized, this.explicitBumpTargets.leaf);
-  }
-
-  bumpDescendants(pathPrefix: string): void {
-    this.bumpDescendantsNormalized(PathUtils.normalizePath(pathPrefix));
+    this.bump(normalized, this.leafTargets);
   }
 
   bumpDescendantsNormalized(normalized: string): void {
-    if (!this.hooks.hasExistingNodes()) return;
+    if (!this.hooks.hasNodes()) return;
     const prefix = `${normalized}.`;
     const targets: string[] = [];
     for (const key of this.hooks.keys()) {
@@ -99,77 +75,25 @@ export class VersionBumpCoordinator {
     this.applyTargets(targets);
   }
 
-  bumpFromPatches(patches: Array<{ op: string; path: Array<string | number> }>): void {
-    if (!Array.isArray(patches) || patches.length === 0) return;
-    const toBump = new Set<string>();
-    for (const patch of patches) {
-      if (!patch || !Array.isArray(patch.path)) continue;
-      const segments = patch.path.map(String).filter(Boolean);
-      if (segments.length === 0) continue;
-      const path = segments.join('.');
-      for (const target of PathUtils.enumerateAncestors(path, {
-        includeNumericParent: this.policy.getBumpNumericParent()
-      })) {
-        toBump.add(target);
-      }
-      if (patch.op === 'remove') this.hooks.cleanup(path);
-    }
-    for (const path of toBump) this.hooks.updateIfExists(path);
-  }
-
-  clear(): void {
-    this.ancestorPathCache.clear();
-  }
-
-  resetCache(): void {
-    this.clear();
-    this.ancestorCacheHits = 0;
-    this.ancestorCacheMisses = 0;
-    this.ancestorCacheEvictions = 0;
-  }
-
-  /**
-   * Diagnostic cache metrics for tests, perf lab, and dev tooling.
-   * These counters are local to this coordinator and reset with resetCache().
-   */
-  getCacheMetrics(): VersionBumpCoordinatorCacheMetrics {
-    const total = this.ancestorCacheHits + this.ancestorCacheMisses;
-    return {
-      ancestorPathCache: {
-        size: this.ancestorPathCache.size,
-        maxSize: VersionBumpCoordinator.MAX_ANCESTOR_CACHE_SIZE,
-        hits: this.ancestorCacheHits,
-        misses: this.ancestorCacheMisses,
-        evictions: this.ancestorCacheEvictions,
-        hitRate: total > 0 ? this.ancestorCacheHits / total : 0,
-      },
-    };
-  }
-
   destroy(): void {
     this.scheduler.destroy();
-    this.clear();
+    this.ancestorCache.clear();
   }
 
-  private getAncestorPaths(normalizedPath: string): string[] {
-    const cached = this.ancestorPathCache.get(normalizedPath);
-    if (cached) {
-      this.ancestorCacheHits++;
-      return cached;
+  private ancestorEntry(normalizedPath: string): AncestorEntry {
+    const cached = this.ancestorCache.get(normalizedPath);
+    if (cached) return cached;
+    if (this.ancestorCache.size >= MAX_ANCESTOR_CACHE_SIZE) {
+      const firstKey = this.ancestorCache.keys().next().value;
+      if (firstKey) this.ancestorCache.delete(firstKey);
     }
-    this.ancestorCacheMisses++;
-    if (this.ancestorPathCache.size >= VersionBumpCoordinator.MAX_ANCESTOR_CACHE_SIZE) {
-      const firstKey = this.ancestorPathCache.keys().next().value;
-      if (firstKey) {
-        this.ancestorPathCache.delete(firstKey);
-        this.ancestorCacheEvictions++;
-      }
-    }
-    const ancestors = PathUtils.enumerateAncestors(normalizedPath, {
-      includeNumericParent: this.policy.getBumpNumericParent()
-    });
-    this.ancestorPathCache.set(normalizedPath, ancestors);
-    return ancestors;
+    const entry: AncestorEntry = {
+      ordered: PathUtils.enumerateAncestors(normalizedPath, {
+        includeNumericParent: this.policy.getBumpNumericParent()
+      })
+    };
+    this.ancestorCache.set(normalizedPath, entry);
+    return entry;
   }
 
   private applyTargets(targets: string[]): void {
@@ -182,18 +106,8 @@ export class VersionBumpCoordinator {
     for (const target of targets) this.hooks.updateIfExists(target);
   }
 
-  private bumpWithTargets(path: string, getTargets: (normalized: string) => string[]): void {
-    this.bumpWithNormalizedTargets(PathUtils.normalizePath(path), getTargets);
-  }
-
-  private bumpWithNormalizedTargets(normalized: string, getTargets: (normalized: string) => string[]): void {
+  private bump(normalized: string, getTargets: BumpTargetResolver): void {
     if (!this.hooks.hasNodes()) return;
     this.applyTargets(getTargets(normalized));
-  }
-
-  private getPolicyBumpTarget(): BumpTargetResolver {
-    return this.policy.getPartialInvalidation()
-      ? this.policyBumpTargets.partial
-      : this.policyBumpTargets.branch;
   }
 }
