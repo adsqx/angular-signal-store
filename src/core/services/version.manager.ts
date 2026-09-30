@@ -1,59 +1,47 @@
 import { signal, type WritableSignal } from '@angular/core';
 import type { CreateStoreService } from '../create-store.core';
 import { BaseManager } from './base.manager';
-import { ReactiveNodeManager } from '../../utils/abstracts/reactive-node-manager';
+import { FlatStoreMap } from '../../utils/flat-store-map';
 import type { StoreData } from '../../types/advanced-types';
 
-/**
- * VersionManager: stores version signals per path.
- * Refactored with ReactiveNodeManager base.
- */
+/** VersionManager: stores one version signal per path. */
 export class VersionManager<TStore extends StoreData = StoreData> extends BaseManager<TStore> {
-  private nodeManager = new (class extends ReactiveNodeManager<WritableSignal<number>> {
-    createNode(_path: string): WritableSignal<number> {
-      return signal(0);
-    }
-
-    onDelete(_path: string, _node: WritableSignal<number>): void {}
-  })(
-    this.storeName,
-    (_path) => undefined, // version signals don't need store value
-    () => this.devActive
-  );
+  private readonly nodes = new FlatStoreMap<WritableSignal<number>>();
 
   constructor(core: CreateStoreService<TStore>, storeName: string) {
     super(core, storeName);
   }
 
   get(path: string): WritableSignal<number> {
-    return this.nodeManager.add(path);
+    return this.nodes.getOrCreate(path, () => signal(0));
   }
 
   updateIfExists(path: string): void {
-    const node = this.nodeManager.peek(path);
+    const node = this.nodes.get(path);
     if (!node) return;
     node.update((n) => n + 1);
-    this.emitDevtoolsUpdate('update', this.normalizePath(path));
+    this.emitDevtoolsUpdate('update', path);
   }
 
   cleanup(pathPrefix?: string): void {
-    this.nodeManager.cleanup(pathPrefix);
-    this.emitDevtoolsUpdate('remove', pathPrefix ? this.normalizePath(pathPrefix) : '');
+    if (pathPrefix) this.nodes.deleteByPrefix(pathPrefix);
+    else this.nodes.clear();
+    this.emitDevtoolsUpdate('remove', pathPrefix);
   }
 
   keys(): string[] {
-    return this.nodeManager.keys();
+    return this.nodes.keys();
   }
 
   hasNodes(): boolean {
-    return this.nodeManager.count() > 0;
+    return this.nodes.size > 0;
   }
 
-  private emitDevtoolsUpdate(actionType: 'add' | 'remove' | 'update', path: string): void {
+  private emitDevtoolsUpdate(action: 'add' | 'remove' | 'update', path = ''): void {
     if (!this.devActive) return;
     this.emitDevTools({
       type: 'VERSION_STORE_UPDATE',
-      payload: { storeName: this.storeName, action: actionType, path, keys: this.keys(), graph: undefined }
+      payload: { storeName: this.storeName, action, path: path && this.normalizePath(path), keys: this.keys(), graph: undefined }
     });
   }
 }
