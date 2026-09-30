@@ -1,7 +1,7 @@
 {
   "name": "@adsq/angular-signal-store",
   "version": "0.2.1",
-  "description": "Angular SignalStore — reactive, proxy-based store with fine-grained signal wake. Uses jsnq (separate dependency) for queries/mutations.",
+  "description": "Signal-based state for Angular as a callable nested proxy: store.user.name() reads, store.user.name = 'Ada' writes, and only that path's consumers wake. Optional JSNQ queries and devtools entry points.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adsqx/angular-signal-store.git"
@@ -65,11 +65,15 @@
   },
   "keywords": [
     "angular",
-    "signal",
+    "angular-signals",
+    "signals",
+    "signal-store",
     "store",
     "state-management",
     "reactive",
     "proxy",
+    "fine-grained",
+    "rxjs",
     "jsnq"
   ],
   "license": "MIT"
