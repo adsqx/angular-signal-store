@@ -2,20 +2,15 @@ import { ProxyFactoryConfig } from '../interfaces/proxy-factory-config.interface
 import { ILogger } from '../interfaces/logger.interface';
 import { StoreProxy, ProxyCallable } from '../interfaces/types';
 import { IStoreInstance } from '../interfaces/store-instance.interface';
-import { BaseProxyHandler } from './base-proxy-handler.abstract';
 import { createCallableProxy, type CallableProxyOptions } from './callable-proxy.util';
+import { asHost, type StoreHost } from './store-host';
+import { createWriteFns } from './store-writes';
 import { GenericProxyHandler } from './generic-proxy-handler.class';
 import { StoreData } from '../types/advanced-types';
 import { SignalStore } from '../core/signal-store.service';
 import { CreateStoreService } from '../core/create-store.core';
-import { PathUtils } from '../utils/path-utils';
+import type { CacheMetrics } from '../core/services/proxy-cache.manager';
 import { PathReader } from '../utils/abstracts/path-reader';
-
-interface CacheMetrics {
-  hits: number;
-  misses: number;
-  hitRate: number;
-}
 
 export class ProxyFactory {
   private readonly maxCacheSize: number;
@@ -122,20 +117,15 @@ export class ProxyFactory {
     this.signalStore.clearProxyCacheLimit(this.storeName);
   }
 
-  clearCacheForPath(path: string) {
-    if (this.storeName) {
-      this.createStoreService.clearProxyCacheForPath(path);
-    }
-  }
-
-  private getValueIteratively<R = unknown, S extends StoreData = StoreData>(storeInstance: IStoreInstance<S>, path: string): R | undefined {
+  private getValueIteratively(host: StoreHost, path: string): unknown {
+    const root = host.store as Record<string, unknown>;
     if (this.useInPlaceIteration && path.indexOf('[') === -1) {
-      return this.readDotPathInPlace<R>(storeInstance.store as unknown as Record<string, unknown>, path);
+      return this.readDotPathInPlace(root, path);
     }
-    return this.pathReader.read<R>(storeInstance.store as unknown as Record<string, unknown>, path);
+    return this.pathReader.read(root, path);
   }
 
-  private readDotPathInPlace<R>(root: Record<string, unknown> | undefined, path: string): R | undefined {
+  private readDotPathInPlace(root: Record<string, unknown> | undefined, path: string): unknown {
     if (!root || !path) return undefined;
     let current: unknown = root;
     let start = 0;
@@ -148,17 +138,17 @@ export class ProxyFactory {
       start = i + 1;
     }
 
-    return current as R | undefined;
+    return current;
   }
 
-  private cacheMake<S extends StoreData>(
+  private cacheMake(
     path: string,
     value: unknown,
-    storeInstance: IStoreInstance<S>,
-    nestedProxyFactory: (path: string, value: unknown) => ProxyCallable,
-    callableOptions: CallableProxyOptions
+    host: StoreHost,
+    make: (path: string, value: unknown) => ProxyCallable
   ): ProxyCallable {
-    const cached = this.createStoreService.getProxyCacheEntry(path);
+    const service = this.createStoreService;
+    const cached = service.getProxyCacheEntry(path);
     if (cached) {
       this.recordCacheHit();
       return cached;
@@ -166,38 +156,20 @@ export class ProxyFactory {
 
     this.recordCacheMiss();
 
-    const callableProxy = createCallableProxy(
-      path,
-      storeInstance as unknown as IStoreInstance<StoreData>,
-      value,
-      nestedProxyFactory,
-      callableOptions
-    ) as ProxyCallable;
-    this.createStoreService.setProxyCacheEntry(callableProxy, path);
+    const callableProxy = make(path, value);
+    service.setProxyCacheEntry(callableProxy, path);
 
-    if (path.includes('.')) {
-      const segments = path.split('.');
-      let prefix = '';
-      for (let i = 0; i < segments.length - 1; i++) {
-        prefix = prefix ? `${prefix}.${segments[i]}` : segments[i];
-        if (!this.createStoreService.getProxyCacheEntry(prefix)) {
-          const intermediateValue = this.getValueIteratively<unknown, S>(storeInstance, prefix);
-          if (intermediateValue !== undefined) {
-              const intermediateProxy = createCallableProxy(
-                prefix,
-                storeInstance as unknown as IStoreInstance<StoreData>,
-                intermediateValue,
-                nestedProxyFactory,
-                callableOptions
-              ) as ProxyCallable;
-            this.createStoreService.setProxyCacheEntry(intermediateProxy, prefix);
-            try {
-              storeInstance.prefetchCursorWithNode?.(prefix, intermediateValue);
-            } catch (e) {
-              console.warn('ProxyFactory prefetchCursor error:', e);
-            }
-          }
-        }
+    // Prefetch missing ancestors, root-most first: "a.b.c" visits "a", then "a.b".
+    for (let dot = path.indexOf('.'); dot !== -1; dot = path.indexOf('.', dot + 1)) {
+      const prefix = path.slice(0, dot);
+      if (service.getProxyCacheEntry(prefix)) continue;
+      const intermediateValue = this.getValueIteratively(host, prefix);
+      if (intermediateValue === undefined) continue;
+      service.setProxyCacheEntry(make(prefix, intermediateValue), prefix);
+      try {
+        host.prefetchCursorWithNode?.(prefix, intermediateValue);
+      } catch (e) {
+        console.warn('ProxyFactory prefetchCursor error:', e);
       }
     }
 
@@ -205,48 +177,12 @@ export class ProxyFactory {
   }
 
   createStoreProxy<T extends StoreData>(storeInstance: IStoreInstance<T>): StoreProxy<T> {
-    const setFn = (p: string, v: unknown): void => {
-      if (v === undefined && this.strictDeleteUndefined) {
-        throw new Error(`Setting undefined is not allowed in strict mode for path: ${p}`);
-      }
-      if (v === undefined) {
-        deleteFn(p);
-        return;
-      }
-      const fast = storeInstance.setValueFast;
-      if (typeof fast === 'function') {
-        if (!PathUtils.isValidPath(p)) {
-          if (this.strictInvalidPath) throw new Error(`Invalid path for setValueFast: ${p}`);
-          this.logger.warn(`Invalid path for setValueFast: ${p}`);
-          return;
-        }
-        fast.call(storeInstance, p, v);
-        return;
-      }
-      if (!PathUtils.isValidPath(p)) {
-        if (this.strictInvalidPath) throw new Error(`Invalid path for setValue: ${p}`);
-        this.logger.warn(`Invalid path for setValue: ${p}`);
-        return;
-      }
-      storeInstance.setValueObserve(p as never, v as never);
-    };
-
-    const deleteFn = (p: string): void => {
-      if (this.strictDeleteUndefined) {
-        throw new Error(`Delete operation is not allowed in strict mode for path: ${p}`);
-      }
-      if (!PathUtils.isValidPath(p)) {
-        if (this.strictInvalidPath) throw new Error(`Invalid path for deleteValue: ${p}`);
-        this.logger.warn(`Invalid path for deleteValue: ${p}`);
-        return;
-      }
-      if (storeInstance.deleteValue) {
-        storeInstance.deleteValue(p as never);
-      } else {
-        storeInstance.cleanupPath(p);
-        storeInstance.setValue(p as never, undefined as never);
-      }
-    };
+    const host = asHost(storeInstance);
+    const { setFn, deleteFn } = createWriteFns(host, {
+      strictInvalidPath: this.strictInvalidPath,
+      strictDeleteUndefined: this.strictDeleteUndefined,
+      warn: (message) => this.logger.warn(message),
+    });
 
     const callableOptions: CallableProxyOptions = {
       strictInvalidPath: this.strictInvalidPath,
@@ -255,25 +191,22 @@ export class ProxyFactory {
       deleteFn,
     };
 
+    const make = (path: string, value: unknown): ProxyCallable =>
+      createCallableProxy(path, host, value, nestedProxyFactory, callableOptions);
+
     const nestedProxyFactory = (path: string, value: unknown): ProxyCallable => {
       try {
-        return this.cacheMake(path, value, storeInstance, nestedProxyFactory, callableOptions);
+        return this.cacheMake(path, value, host, make);
       } catch (error) {
         this.logger.warn(`Error creating proxy for path ${path}:`, error);
-        return createCallableProxy(
-          path,
-          storeInstance as unknown as IStoreInstance<StoreData>,
-          value,
-          nestedProxyFactory,
-          callableOptions
-        ) as ProxyCallable;
+        return make(path, value);
       }
     };
 
     const handler = new GenericProxyHandler<T>(storeInstance, {
       pathPrefix: '',
       exposeStoreMethods: true,
-      resolveFn: (path) => this.getValueIteratively(storeInstance, path),
+      resolveFn: (path) => this.getValueIteratively(host, path),
       nestedProxyFactory,
       rxjsAllowedOnRoot: this.rxjsAllowedOnRoot,
       strictInvalidPath: this.strictInvalidPath,
@@ -284,11 +217,10 @@ export class ProxyFactory {
       deleteFn,
     });
 
-    const proxyStore = new Proxy({}, {
+    return new Proxy({}, {
       get: handler.createProxyGetter({}),
       set: handler.createProxySetter(),
       deleteProperty: handler.createProxyDeleter()
-    });
-    return proxyStore as StoreProxy<T>;
+    }) as StoreProxy<T>;
   }
 }
