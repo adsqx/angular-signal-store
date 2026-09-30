@@ -12,98 +12,50 @@ export interface ArrayQueryExecutorOptions {
   cloneFoundObject?: boolean;
 }
 
-interface ArrayQueryContext<E> {
-  arrayRef: E[];
-  input: ArrayQueryInput<E>;
-  args: unknown[];
-  options: ArrayQueryExecutorOptions;
-}
-
-type ArrayQueryHandler = <E>(context: ArrayQueryContext<E>) => unknown;
-
-function asPredicate<E>(input: ArrayQueryInput<E>): PredicateFn<E> {
+/** Coerces a predicate-or-value argument into a predicate (values match by strict equality). */
+export function asPredicate<E>(input: ArrayQueryInput<E>): PredicateFn<E> {
   return typeof input === 'function'
     ? (input as PredicateFn<E>)
     : (item: E) => item === (input as E);
 }
 
-class ArrayQueryExecutor {
-  private static readonly handlers: Record<ArrayQueryMethodWithLength, ArrayQueryHandler> = {
-    find: (context) => ArrayQueryExecutor.find(context),
-    findIndex: (context) => ArrayQueryExecutor.findIndex(context),
-    filter: (context) => ArrayQueryExecutor.filter(context),
-    map: (context) => ArrayQueryExecutor.map(context),
-    reduce: (context) => ArrayQueryExecutor.reduce(context),
-    some: (context) => ArrayQueryExecutor.some(context),
-    every: (context) => ArrayQueryExecutor.every(context),
-    includes: (context) => ArrayQueryExecutor.includes(context),
-    indexOf: (context) => ArrayQueryExecutor.indexOf(context),
-    length: (context) => ArrayQueryExecutor.lengthQuery(context)
-  };
+type ArrayQueryHandler = (
+  arrayRef: unknown[],
+  input: unknown,
+  args: unknown[],
+  options: ArrayQueryExecutorOptions
+) => unknown;
 
-  static execute<E>(
-    arrayRef: E[],
-    method: ArrayQueryMethodWithLength,
-    input: ArrayQueryInput<E>,
-    args: unknown[],
-    options: ArrayQueryExecutorOptions
-  ): unknown {
-    return ArrayQueryExecutor.handlers[method]({ arrayRef, input, args, options });
-  }
+const handlers: Record<ArrayQueryMethodWithLength, ArrayQueryHandler> = {
+  find: (arr, input, _args, options) => {
+    const result = arr.find(asPredicate(input));
+    return options.cloneFoundObject && result && typeof result === 'object'
+      ? { ...(result as Record<string, unknown>) }
+      : result;
+  },
+  findIndex: (arr, input) => arr.findIndex(asPredicate(input)),
+  filter: (arr, input) => arr.filter(input as PredicateFn<unknown>),
+  map: (arr, input) => arr.map(input as MapFn<unknown, unknown>),
+  reduce: (arr, input, args) =>
+    args.length > 0
+      ? arr.reduce(input as ReduceFn<unknown, unknown>, args[0])
+      : arr.reduce(input as ReduceFn<unknown, unknown>),
+  some: (arr, input) => arr.some(input as PredicateFn<unknown>),
+  every: (arr, input) => arr.every(input as PredicateFn<unknown>),
+  includes: (arr, input) => arr.includes(input),
+  indexOf: (arr, input) => arr.indexOf(input),
+  length: (arr) => arr.length
+};
 
-  private static find<E>({ arrayRef, input, options }: ArrayQueryContext<E>): unknown {
-    const result = arrayRef.find(asPredicate(input));
-    if (options.cloneFoundObject && result && typeof result === 'object') {
-      return { ...(result as Record<string, unknown>) };
-    }
-    return result;
-  }
-
-  private static findIndex<E>({ arrayRef, input }: ArrayQueryContext<E>): number {
-    return arrayRef.findIndex(asPredicate(input));
-  }
-
-  private static filter<E>({ arrayRef, input }: ArrayQueryContext<E>): E[] {
-    return arrayRef.filter(input as PredicateFn<E>);
-  }
-
-  private static map<E>({ arrayRef, input }: ArrayQueryContext<E>): unknown[] {
-    return arrayRef.map(input as MapFn<E, unknown>);
-  }
-
-  private static reduce<E>({ arrayRef, input, args }: ArrayQueryContext<E>): unknown {
-    return args.length > 0
-      ? arrayRef.reduce(input as ReduceFn<E, E>, args[0] as E)
-      : arrayRef.reduce(input as ReduceFn<E, E>);
-  }
-
-  private static some<E>({ arrayRef, input }: ArrayQueryContext<E>): boolean {
-    return arrayRef.some(input as PredicateFn<E>);
-  }
-
-  private static every<E>({ arrayRef, input }: ArrayQueryContext<E>): boolean {
-    return arrayRef.every(input as PredicateFn<E>);
-  }
-
-  private static includes<E>({ arrayRef, input }: ArrayQueryContext<E>): boolean {
-    return arrayRef.includes(input as E);
-  }
-
-  private static indexOf<E>({ arrayRef, input }: ArrayQueryContext<E>): number {
-    return arrayRef.indexOf(input as E);
-  }
-
-  private static lengthQuery<E>({ arrayRef }: ArrayQueryContext<E>): number {
-    return arrayRef.length;
-  }
-}
+const NO_ARGS: unknown[] = [];
+const NO_OPTIONS: ArrayQueryExecutorOptions = {};
 
 export function executeArrayQuery<E>(
   arrayRef: E[],
   method: ArrayQueryMethodWithLength,
   input: ArrayQueryInput<E>,
-  args: unknown[] = [],
-  options: ArrayQueryExecutorOptions = {}
+  args: unknown[] = NO_ARGS,
+  options: ArrayQueryExecutorOptions = NO_OPTIONS
 ): unknown {
-  return ArrayQueryExecutor.execute(arrayRef, method, input, args, options);
+  return handlers[method](arrayRef, input, args, options);
 }

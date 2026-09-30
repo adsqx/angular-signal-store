@@ -1,7 +1,14 @@
 // Shared helpers to build stable cache keys and hashed segments for array queries
 
+// Function.toString() re-slices the source on every call; stable callbacks hit this cache.
+const fnKeys = new WeakMap<object, string>();
+
 export function serializeForKey(v: unknown): string {
-  if (typeof v === 'function') return v.toString();
+  if (typeof v === 'function') {
+    let key = fnKeys.get(v);
+    if (key === undefined) fnKeys.set(v, (key = v.toString()));
+    return key;
+  }
   try {
     return JSON.stringify(v);
   } catch {
