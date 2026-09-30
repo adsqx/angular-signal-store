@@ -41,12 +41,14 @@
     "build": "ng-packagr -p ng-package.json -c tsconfig.lib.json",
     "prepack": "npm run build && npm run verify:exports",
     "typecheck": "tsc --noEmit",
+    "typecheck:examples": "tsc -p examples/tsconfig.json",
     "test:smoke": "bun test/smoke.ts",
     "bench:store": "bun test/store-throughput-bench.ts",
     "verify:exports": "node scripts/verify-exports.mjs",
     "test:jsnq-optional": "bun test/jsnq-optional.test.ts",
     "bench:paths": "bun test/path-bench.ts",
-    "test:path-parity": "bun test/path-core-jsnq-parity.test.ts"
+    "test:path-parity": "bun test/path-core-jsnq-parity.test.ts",
+    "examples": "bun examples/run-all.ts"
   },
   "peerDependencies": {
     "@angular/core": ">=20.0.0 <23.0.0",
