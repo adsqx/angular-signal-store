@@ -1,15 +1,57 @@
-import { PathUtils } from '../path-utils';
+import type { ArrayMutationMethod, SpliceOperation } from '../../types/advanced-types';
 
-export type ArrayMutationMethod = 'push' | 'unshift' | 'pop' | 'shift' | 'splice' | 'sort' | 'reverse';
-
-export interface SpliceOperation {
-  start: number;
-  deleteCount?: number;
-  items: unknown[];
+/** Store/cache services an orchestrator needs; everything but the wake-up is optional. */
+export interface ArrayMutationHost {
+  wakeUpArrayMutation(path: string, value: unknown, afterVersion?: () => void): void;
+  clearProxyCacheForPath?(path: string): void;
+  cleanupBehaviorStore?(path: string): void;
+  cleanupComputedStore?(path: string): void;
+  cleanupVersionStore?(path: string): void;
+  deleteIndexedProxyCacheRange?(arrayPath: string, startIndex: number, endIndex: number): void;
+  hasIndexedProxyCacheFrom?(arrayPath: string, startIndex: number): boolean;
+  hasIndexedDerivedNodeFrom?(arrayPath: string, startIndex: number): boolean;
 }
 
-type ArrayMutationHandler = (arrayRef: unknown[], payload: unknown) => unknown;
-type InvalidationStartHandler = (payload: unknown, array: unknown[]) => number | null;
+interface MutationEntry {
+  apply(arrayRef: unknown[], payload: unknown): unknown;
+  /** First index whose cached proxies go stale, or null when none do. */
+  invalidateFrom(arrayRef: unknown[], payload: unknown): number | null;
+}
+
+const fromStart = (): number => 0;
+const items = (payload: unknown) => payload as unknown[];
+
+function spliceInvalidationStart(arrayRef: unknown[], payload: unknown): number | null {
+  const op = payload as SpliceOperation;
+  const length = arrayRef.length;
+  const start = op.start < 0 ? Math.max(length + op.start, 0) : Math.min(op.start, length);
+  const deleteCount = op.deleteCount ?? Math.max(0, length - start);
+  if (deleteCount <= 0 && op.items.length <= 0) return null;
+  if (start >= length && deleteCount <= 0) return null;
+  return start;
+}
+
+const MUTATIONS: Record<ArrayMutationMethod, MutationEntry> = {
+  push: {
+    apply: (arr, payload) => items(payload).length === 1 ? arr.push(items(payload)[0]) : arr.push(...items(payload)),
+    invalidateFrom: () => null
+  },
+  unshift: {
+    apply: (arr, payload) => items(payload).length === 1 ? arr.unshift(items(payload)[0]) : arr.unshift(...items(payload)),
+    invalidateFrom: fromStart
+  },
+  pop: { apply: (arr) => arr.pop(), invalidateFrom: (arr) => arr.length - 1 },
+  shift: { apply: (arr) => arr.shift(), invalidateFrom: fromStart },
+  sort: { apply: (arr, payload) => arr.sort(payload as (a: unknown, b: unknown) => number), invalidateFrom: fromStart },
+  reverse: { apply: (arr) => arr.reverse(), invalidateFrom: fromStart },
+  splice: {
+    apply: (arr, payload) => {
+      const op = payload as SpliceOperation;
+      return op.deleteCount === undefined ? arr.splice(op.start) : arr.splice(op.start, op.deleteCount, ...op.items);
+    },
+    invalidateFrom: spliceInvalidationStart
+  }
+};
 
 /**
  * Single orchestrator for array mutations with automatic:
@@ -22,37 +64,7 @@ type InvalidationStartHandler = (payload: unknown, array: unknown[]) => number |
  * delegate into this path via storeInstance.setArrayMethod().
  */
 export class ArrayMutationOrchestrator {
-  private readonly mutationHandlers: Record<ArrayMutationMethod, ArrayMutationHandler> = {
-    push: (arrayRef, payload) => this.applyPush(arrayRef, payload),
-    unshift: (arrayRef, payload) => this.applyUnshift(arrayRef, payload),
-    pop: (arrayRef) => this.applyPop(arrayRef),
-    shift: (arrayRef) => this.applyShift(arrayRef),
-    sort: (arrayRef, payload) => this.applySort(arrayRef, payload),
-    reverse: (arrayRef) => this.applyReverse(arrayRef),
-    splice: (arrayRef, payload) => this.applySplice(arrayRef, payload)
-  };
-
-  private readonly invalidationStartHandlers: Record<ArrayMutationMethod, InvalidationStartHandler> = {
-    push: () => null,
-    pop: (_payload, array) => array.length - 1,
-    shift: () => 0,
-    reverse: () => 0,
-    sort: () => 0,
-    unshift: () => 0,
-    splice: (payload, array) => this.computeSpliceInvalidationStart(payload, array.length)
-  };
-
-  constructor(
-    private readonly wakeUpVersionPath: (path: string) => void,
-    private readonly wakeUpArrayMutation: (path: string, value: unknown, afterVersion?: () => void) => void,
-    private readonly clearProxyCacheForPath: (path: string) => void,
-    private readonly cleanupBehaviorStore?: (path: string) => void,
-    private readonly cleanupComputedStore?: (path: string) => void,
-    private readonly cleanupVersionStore?: (path: string) => void,
-    private readonly deleteIndexedProxyCacheRange?: (arrayPath: string, startIndex: number, endIndex: number) => void,
-    private readonly hasIndexedProxyCacheFrom?: (arrayPath: string, startIndex: number) => boolean,
-    private readonly hasIndexedDerivedNodeFrom?: (arrayPath: string, startIndex: number) => boolean
-  ) {}
+  constructor(private readonly host: ArrayMutationHost) {}
 
   mutate(
     arrayPath: string,
@@ -60,10 +72,10 @@ export class ArrayMutationOrchestrator {
     method: ArrayMutationMethod,
     payload: unknown
   ): { oldLength: number; newLength: number; proxyInvalidationStart: number | null; result: unknown } {
+    const entry = MUTATIONS[method];
     const oldLength = arrayRef.length;
-    const proxyInvalidationStart = this.computeInvalidationStart(method, payload, arrayRef);
-    const result = this.mutationHandlers[method](arrayRef, payload);
-
+    const proxyInvalidationStart = oldLength ? entry.invalidateFrom(arrayRef, payload) : null;
+    const result = entry.apply(arrayRef, payload);
     const newLength = arrayRef.length;
 
     this.finalizeArrayChange(arrayPath, arrayRef, oldLength, newLength, proxyInvalidationStart);
@@ -76,19 +88,7 @@ export class ArrayMutationOrchestrator {
       throw new Error(`Index ${index} out of bounds for array at ${arrayPath}`);
     }
     arrayRef[index] = newValue;
-    const elementPath = `${arrayPath}.${index}`;
-    this.wakeUpArrayMutation(elementPath, newValue);
-  }
-
-  deleteByIndex(arrayPath: string, arrayRef: unknown[], index: number): void {
-    const oldLength = arrayRef.length;
-    if (index < 0 || index >= arrayRef.length) {
-      this.wakeUpVersionPath(arrayPath);
-      return;
-    }
-    arrayRef.splice(index, 1);
-    const newLength = arrayRef.length;
-    this.finalizeArrayChange(arrayPath, arrayRef, oldLength, newLength, index);
+    this.host.wakeUpArrayMutation(`${arrayPath}.${index}`, newValue);
   }
 
   finalizeArrayChange(
@@ -98,104 +98,46 @@ export class ArrayMutationOrchestrator {
     newLength: number,
     proxyInvalidationStart: number | null
   ): void {
-    this.wakeUpArrayMutation(arrayPath, value, () => {
-      if (proxyInvalidationStart !== null && this.shouldClearIndexedProxyCache(arrayPath, proxyInvalidationStart)) {
+    this.host.wakeUpArrayMutation(arrayPath, value, () => {
+      if (proxyInvalidationStart !== null && this.hasProxyCacheFrom(arrayPath, proxyInvalidationStart)) {
         this.invalidateProxyRange(arrayPath, proxyInvalidationStart, oldLength);
       }
       this.cleanupRemovedTailIndices(arrayPath, oldLength, newLength);
     });
   }
 
-  private computeInvalidationStart(
-    method: ArrayMutationMethod,
-    payload: unknown,
-    array: unknown[]
-  ): number | null {
-    if (!array.length) return null;
-    return this.invalidationStartHandlers[method](payload, array);
-  }
-
-  private applyPush(arrayRef: unknown[], payload: unknown): number {
-    const items = payload as unknown[];
-    return items.length === 1 ? arrayRef.push(items[0]) : arrayRef.push(...items);
-  }
-
-  private applyUnshift(arrayRef: unknown[], payload: unknown): number {
-    const items = payload as unknown[];
-    return items.length === 1 ? arrayRef.unshift(items[0]) : arrayRef.unshift(...items);
-  }
-
-  private applyPop(arrayRef: unknown[]): unknown {
-    return arrayRef.pop();
-  }
-
-  private applyShift(arrayRef: unknown[]): unknown {
-    return arrayRef.shift();
-  }
-
-  private applySort(arrayRef: unknown[], payload: unknown): unknown[] {
-    return arrayRef.sort(payload as (a: unknown, b: unknown) => number);
-  }
-
-  private applyReverse(arrayRef: unknown[]): unknown[] {
-    return arrayRef.reverse();
-  }
-
-  private applySplice(arrayRef: unknown[], payload: unknown): unknown[] {
-    const op = payload as SpliceOperation;
-    return op.deleteCount === undefined
-      ? arrayRef.splice(op.start)
-      : arrayRef.splice(op.start, op.deleteCount, ...op.items);
-  }
-
-  private computeSpliceInvalidationStart(payload: unknown, length: number): number | null {
-    const op = payload as SpliceOperation;
-    const start = this.normalizeSpliceStart(op.start, length);
-    const deleteCount = op.deleteCount ?? Math.max(0, length - start);
-    if (deleteCount <= 0 && op.items.length <= 0) return null;
-    if (start >= length && deleteCount <= 0) return null;
-    return start;
-  }
-
-  private normalizeSpliceStart(start: number, arrayLength: number): number {
-    if (start < 0) return Math.max(arrayLength + start, 0);
-    return Math.min(start, arrayLength);
-  }
-
   invalidateProxyRange(arrayPath: string, startIndex: number, oldLength: number): void {
     if (startIndex < 0 || startIndex >= oldLength) return;
-    if (this.deleteIndexedProxyCacheRange) {
-      this.deleteIndexedProxyCacheRange(arrayPath, startIndex, oldLength);
+    const { host } = this;
+    if (host.deleteIndexedProxyCacheRange) {
+      host.deleteIndexedProxyCacheRange(arrayPath, startIndex, oldLength);
       return;
     }
     for (let i = startIndex; i < oldLength; i++) {
-      this.clearProxyCacheForPath(`${arrayPath}.${i}`);
+      host.clearProxyCacheForPath?.(`${arrayPath}.${i}`);
     }
   }
 
   cleanupRemovedTailIndices(arrayPath: string, oldLength: number, newLength: number): void {
     if (oldLength <= newLength) return;
-    const shouldClearProxyCache = this.shouldClearIndexedProxyCache(arrayPath, newLength);
-    const shouldCleanupDerived = this.shouldCleanupIndexedDerivedNodes(arrayPath, newLength);
-    if (!shouldClearProxyCache && !shouldCleanupDerived) return;
-    if (shouldClearProxyCache) this.invalidateProxyRange(arrayPath, newLength, oldLength);
-    for (let index = newLength; index < oldLength; index++) {
-      const elementPath = `${arrayPath}.${index}`;
-      if (shouldCleanupDerived) {
-        queueMicrotask(() => {
-          this.cleanupBehaviorStore?.(elementPath);
-          this.cleanupComputedStore?.(elementPath);
-          this.cleanupVersionStore?.(elementPath);
-        });
+    const clearProxies = this.hasProxyCacheFrom(arrayPath, newLength);
+    const cleanupDerived = this.host.hasIndexedDerivedNodeFrom?.(arrayPath, newLength) ?? true;
+    if (clearProxies) this.invalidateProxyRange(arrayPath, newLength, oldLength);
+    if (!cleanupDerived) return;
+    // One microtask for the whole removed tail. The per-index microtasks used to be queued
+    // back to back, so they already ran contiguously and in this same order.
+    const host = this.host;
+    queueMicrotask(() => {
+      for (let index = newLength; index < oldLength; index++) {
+        const elementPath = `${arrayPath}.${index}`;
+        host.cleanupBehaviorStore?.(elementPath);
+        host.cleanupComputedStore?.(elementPath);
+        host.cleanupVersionStore?.(elementPath);
       }
-    }
+    });
   }
 
-  private shouldClearIndexedProxyCache(arrayPath: string, startIndex: number): boolean {
-    return this.hasIndexedProxyCacheFrom ? this.hasIndexedProxyCacheFrom(arrayPath, startIndex) : true;
-  }
-
-  private shouldCleanupIndexedDerivedNodes(arrayPath: string, startIndex: number): boolean {
-    return this.hasIndexedDerivedNodeFrom ? this.hasIndexedDerivedNodeFrom(arrayPath, startIndex) : true;
+  private hasProxyCacheFrom(arrayPath: string, startIndex: number): boolean {
+    return this.host.hasIndexedProxyCacheFrom?.(arrayPath, startIndex) ?? true;
   }
 }

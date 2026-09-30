@@ -12,11 +12,13 @@ import {
 import { StoreErrorFactory } from '../types/errors';
 import { SignalStore } from '../core/signal-store.service';
 import { PathUtils } from '../utils/path-utils';
-import { ArrayMutationOrchestrator } from '../utils/abstracts/array-mutation-orchestrator';
-import { executeArrayQuery } from '../utils/array-query-executor';
+import { ArrayMutationHost, ArrayMutationOrchestrator } from '../utils/abstracts/array-mutation-orchestrator';
+import { ArrayQueryMethodWithLength, asPredicate, executeArrayQuery } from '../utils/array-query-executor';
 
-type ArrayElementType<T, P extends string> = PathValue<T, P> extends readonly (infer V)[] ? V : never;
-type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
+export { ArrayChain } from './array-chain';
+
+export type ArrayElementType<T, P extends string> = PathValue<T, P> extends readonly (infer V)[] ? V : never;
+type ArrayQueryPredicate<E, M extends ArrayQueryMethodWithLength> =
   M extends 'find' | 'findIndex' | 'filter' | 'some' | 'every' ? PredicateFn<E> :
   M extends 'map' ? MapFn<E, unknown> :
   M extends 'reduce' ? ReduceFn<E, unknown> :
@@ -24,23 +26,69 @@ type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
   undefined;
 
 type StoreInstance = ReturnType<SignalStore['getStore']> & {
-  createServiceGetter: {
-    cleanupBehaviorStore?: (path: string) => void;
-    cleanupComputedStore?: (path: string) => void;
-    cleanupVersionStore?: (path: string) => void;
-    clearProxyCacheForPath?: (path: string) => void;
-    deleteIndexedProxyCacheRange?: (path: string, startIndex: number, endIndex: number) => void;
-    hasIndexedProxyCacheFrom?: (path: string, startIndex: number) => boolean;
-    hasIndexedDerivedNodeFrom?: (path: string, startIndex: number) => boolean;
-  };
-  wakeUpArrayMutation: (path: string, value: unknown, afterVersion?: () => void) => void;
+  createServiceGetter: Omit<ArrayMutationHost, 'wakeUpArrayMutation'>;
+  wakeUpArrayMutation: ArrayMutationHost['wakeUpArrayMutation'];
   wakeUpVersionPath: (path: string) => void;
 };
 
 type NormalizedMutationInput = { method: ArrayMutationMethod; payload: unknown; devArgs: unknown[] };
 type MutationInputNormalizer = (value: unknown, args: unknown[]) => NormalizedMutationInput;
-type ArrayQueryMethodWithLength = ArrayQueryMethod | 'length';
-type EmptyArrayQueryFallback = () => unknown;
+
+function isSpliceOperation(value: unknown): value is SpliceOperation {
+  return !!value && typeof value === 'object' && 'start' in value && 'deleteCount' in value && 'items' in value;
+}
+
+const variadicInput = (method: 'push' | 'unshift'): MutationInputNormalizer => (value, args) => {
+  const items = [value, ...args];
+  return { method, payload: items, devArgs: items };
+};
+
+const singlePayloadInput = (method: ArrayMutationMethod): MutationInputNormalizer => (value, args) =>
+  ({ method, payload: value, devArgs: [value, ...args] });
+
+const mutationInputNormalizers: Record<ArrayMutationMethod, MutationInputNormalizer> = {
+  splice: (value) => {
+    if (!isSpliceOperation(value)) {
+      throw new Error('Invalid splice operation payload');
+    }
+    const op: SpliceOperation = {
+      start: value.start,
+      deleteCount: value.deleteCount,
+      items: Array.isArray(value.items) ? value.items : []
+    };
+    return { method: 'splice', payload: op, devArgs: [op.start, op.deleteCount, ...op.items] };
+  },
+  push: variadicInput('push'),
+  unshift: variadicInput('unshift'),
+  pop: singlePayloadInput('pop'),
+  shift: singlePayloadInput('shift'),
+  sort: singlePayloadInput('sort'),
+  reverse: singlePayloadInput('reverse')
+};
+
+/** What a query answers when the path holds no array yet. */
+const emptyArrayQueryFallbacks: Record<ArrayQueryMethodWithLength, () => unknown> = {
+  length: () => 0,
+  filter: () => [],
+  map: () => [],
+  find: () => undefined,
+  findIndex: () => undefined,
+  reduce: () => undefined,
+  some: () => undefined,
+  every: () => undefined,
+  includes: () => undefined,
+  indexOf: () => undefined
+};
+
+function normalizeMutationInput(a: unknown, method: ArrayMutationMethod | undefined, args: unknown[]): NormalizedMutationInput {
+  if (a === 'pop' || a === 'shift') {
+    return mutationInputNormalizers[a](undefined, args);
+  }
+  if (!method) {
+    throw new Error('Missing array mutation method');
+  }
+  return mutationInputNormalizers[method](a, args);
+}
 
 export class TypedArrayOperations<
   T extends StoreData = StoreData,
@@ -55,27 +103,14 @@ export class TypedArrayOperations<
     private readonly path: P
   ) {}
 
-  private readonly mutationInputNormalizers: Record<ArrayMutationMethod, MutationInputNormalizer> = {
-    splice: (value) => this.normalizeSpliceInput(value),
-    push: (value, args) => this.normalizeVariadicInput('push', value, args),
-    unshift: (value, args) => this.normalizeVariadicInput('unshift', value, args),
-    pop: (value, args) => this.normalizeSinglePayloadInput('pop', value, args),
-    shift: (value, args) => this.normalizeSinglePayloadInput('shift', value, args),
-    sort: (value, args) => this.normalizeSinglePayloadInput('sort', value, args),
-    reverse: (value, args) => this.normalizeSinglePayloadInput('reverse', value, args)
-  };
-  private readonly emptyArrayQueryFallbacks: Record<ArrayQueryMethodWithLength, EmptyArrayQueryFallback> = {
-    length: () => 0,
-    filter: () => [],
-    map: () => [],
-    find: () => undefined,
-    findIndex: () => undefined,
-    reduce: () => undefined,
-    some: () => undefined,
-    every: () => undefined,
-    includes: () => undefined,
-    indexOf: () => undefined
-  };
+  /** Runs `fn`, rewrapping any failure as an array-operation error for this path. */
+  private guard<R>(operation: string, reason: string, fn: () => R): R {
+    try {
+      return fn();
+    } catch (error) {
+      throw StoreErrorFactory.arrayOperation(this.path, operation, reason, error as Error);
+    }
+  }
 
   private withArray<R>(strict: boolean, fn: (store: StoreInstance, array: unknown[] | undefined, value: unknown) => R): R {
     if (!PathUtils.isValidPath(this.path)) {
@@ -93,87 +128,23 @@ export class TypedArrayOperations<
     return fn(store, array, ref);
   }
 
-  private asPredicate<U>(predicateOrValue: PredicateFn<U> | U): PredicateFn<U> {
-    return typeof predicateOrValue === 'function'
-      ? (predicateOrValue as PredicateFn<U>)
-      : (item: U) => item === (predicateOrValue as U);
-  }
-
-  private isSpliceOperation(value: unknown): value is SpliceOperation {
-    return !!value && typeof value === 'object' && 'start' in value && 'deleteCount' in value && 'items' in value;
-  }
-
   private getOrchestrator(store: StoreInstance): ArrayMutationOrchestrator {
     if (this.orchestrator && this.orchestratorStore === store) {
       return this.orchestrator;
     }
-    const getter = store.createServiceGetter;
-    this.orchestrator = new ArrayMutationOrchestrator(
-      (p) => store.wakeUpVersionPath(p),
-      (p, value, afterVersion) => store.wakeUpArrayMutation(p, value, afterVersion),
-      (p) => getter.clearProxyCacheForPath?.(p),
-      (p) => getter.cleanupBehaviorStore?.(p),
-      (p) => getter.cleanupComputedStore?.(p),
-      (p) => getter.cleanupVersionStore?.(p),
-      (p, startIndex, endIndex) => getter.deleteIndexedProxyCacheRange?.(p, startIndex, endIndex),
-      (p, startIndex) => getter.hasIndexedProxyCacheFrom?.(p, startIndex) ?? true,
-      (p, startIndex) => getter.hasIndexedDerivedNodeFrom?.(p, startIndex) ?? true
-    );
+    const svc = store.createServiceGetter;
+    this.orchestrator = new ArrayMutationOrchestrator({
+      wakeUpArrayMutation: (p, value, afterVersion) => store.wakeUpArrayMutation(p, value, afterVersion),
+      clearProxyCacheForPath: (p) => svc.clearProxyCacheForPath?.(p),
+      cleanupBehaviorStore: (p) => svc.cleanupBehaviorStore?.(p),
+      cleanupComputedStore: (p) => svc.cleanupComputedStore?.(p),
+      cleanupVersionStore: (p) => svc.cleanupVersionStore?.(p),
+      deleteIndexedProxyCacheRange: (p, start, end) => svc.deleteIndexedProxyCacheRange?.(p, start, end),
+      hasIndexedProxyCacheFrom: (p, start) => svc.hasIndexedProxyCacheFrom?.(p, start) ?? true,
+      hasIndexedDerivedNodeFrom: (p, start) => svc.hasIndexedDerivedNodeFrom?.(p, start) ?? true
+    });
     this.orchestratorStore = store;
     return this.orchestrator;
-  }
-
-  private emitDev(method: ArrayMutationMethod, args: unknown[], oldValue: unknown, newValue: unknown): void {
-    if (!this.signalStore.devActive) return;
-    this.signalStore.emitDevAction(this.storeName, {
-      type: 'ARRAY_OPERATION',
-      payload: {
-        path: String(this.path),
-        method: String(method),
-        args,
-        oldValue: (oldValue as unknown[]) ?? [],
-        newValue: (newValue as unknown[]) ?? []
-      }
-    });
-  }
-
-  private normalizeMutationInput(
-    a: unknown,
-    method?: ArrayMutationMethod,
-    args: unknown[] = []
-  ): NormalizedMutationInput {
-    if (typeof a === 'string' && (a === 'pop' || a === 'shift')) {
-      return this.mutationInputNormalizers[a](undefined, args);
-    }
-    if (!method) {
-      throw new Error('Missing array mutation method');
-    }
-    return this.mutationInputNormalizers[method](a, args);
-  }
-
-  private normalizeSpliceInput(value: unknown): NormalizedMutationInput {
-    if (!this.isSpliceOperation(value)) {
-      throw new Error('Invalid splice operation payload');
-    }
-    const op: SpliceOperation = {
-      start: value.start,
-      deleteCount: value.deleteCount,
-      items: Array.isArray(value.items) ? value.items : []
-    };
-    return { method: 'splice', payload: op, devArgs: [op.start, op.deleteCount, ...op.items] };
-  }
-
-  private normalizeVariadicInput(method: Extract<ArrayMutationMethod, 'push' | 'unshift'>, value: unknown, args: unknown[]): NormalizedMutationInput {
-    const items = [value, ...args];
-    return { method, payload: items, devArgs: items };
-  }
-
-  private normalizeSinglePayloadInput(
-    method: Exclude<ArrayMutationMethod, 'splice' | 'push' | 'unshift'>,
-    value: unknown,
-    args: unknown[]
-  ): NormalizedMutationInput {
-    return { method, payload: value, devArgs: [value, ...args] };
   }
 
   private executeMutation(
@@ -182,10 +153,27 @@ export class TypedArrayOperations<
     oldValue: unknown,
     info: NormalizedMutationInput
   ): unknown {
-    const before = this.signalStore.devActive ? structuredClone(array) : oldValue;
+    const dev = this.signalStore.devActive;
+    const before = dev ? structuredClone(array) : oldValue;
     const mutation = this.getOrchestrator(store).mutate(this.path, array, info.method, info.payload);
-    this.emitDev(info.method, info.devArgs, before, array);
+    if (dev) {
+      this.signalStore.emitDevAction(this.storeName, {
+        type: 'ARRAY_OPERATION',
+        payload: {
+          path: String(this.path),
+          method: String(info.method),
+          args: info.devArgs,
+          oldValue: (before as unknown[]) ?? [],
+          newValue: array
+        }
+      });
+    }
     return mutation.result;
+  }
+
+  private mutationFailure(method: unknown, error: unknown): never {
+    const name = String(method);
+    throw StoreErrorFactory.arrayOperation(this.path, name, `${name} operation failed`, error as Error);
   }
 
   findInArray<U = ArrayElementType<T, P>>(predicate: PredicateFn<U> | U): U | undefined { return this.queryArray(predicate, 'find') as U | undefined; }
@@ -200,40 +188,24 @@ export class TypedArrayOperations<
   lengthOfArray(): number { return this.queryArray(undefined as unknown, 'length') as number; }
 
   updateArrayItem<U = ArrayElementType<T, P>>(index: number, newValue: U): void {
-    try {
+    this.guard('updateItem', 'Update array item operation failed', () => {
       this.withArray(true, (store, array) => {
         this.getOrchestrator(store).updateItem(this.path, array as unknown[], index, newValue);
       });
-    } catch (error) {
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        'updateItem',
-        'Update array item operation failed',
-        error as Error
-      );
-    }
+    });
   }
 
   updateArrayItemByFind<U = ArrayElementType<T, P>>(predicate: PredicateFn<U> | U, newValue: U): void {
-    try {
+    this.guard('updateItemByFind', 'Update array item by find operation failed', () => {
       this.withArray(true, (store, array) => {
-        const target = array as U[];
-        const predicateFn = this.asPredicate(predicate);
-        const index = target.findIndex(predicateFn as PredicateFn<U>);
+        const index = (array as U[]).findIndex(asPredicate(predicate));
         if (index !== -1) {
           this.getOrchestrator(store).updateItem(this.path, array as unknown[], index, newValue);
           return;
         }
         store.wakeUpVersionPath(this.path);
       });
-    } catch (error) {
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        'updateItemByFind',
-        'Update array item by find operation failed',
-        error as Error
-      );
-    }
+    });
   }
 
   setArrayMethod(val: unknown, method: ArrayMutationMethod, ...args: unknown[]): unknown;
@@ -242,18 +214,10 @@ export class TypedArrayOperations<
   setArrayMethod(a: unknown, method?: ArrayMutationMethod, ...args: unknown[]): unknown {
     let info: NormalizedMutationInput | undefined;
     try {
-      info = this.normalizeMutationInput(a, method, args);
-      return this.withArray(true, (store, array, oldValue) => {
-        return this.executeMutation(store, array as unknown[], oldValue, info!);
-      });
+      info = normalizeMutationInput(a, method, args);
+      return this.withArray(true, (store, array, oldValue) => this.executeMutation(store, array as unknown[], oldValue, info!));
     } catch (error) {
-      const methodName = info?.method ?? (typeof a === 'string' ? (a as ArrayMutationMethod) : method ?? 'unknown');
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        methodName,
-        `${String(methodName)} operation failed`,
-        error as Error
-      );
+      return this.mutationFailure(info?.method ?? (typeof a === 'string' ? a : method ?? 'unknown'), error);
     }
   }
 
@@ -263,17 +227,11 @@ export class TypedArrayOperations<
       if (!PathUtils.isValidPath(this.path)) {
         throw StoreErrorFactory.pathValidation(this.path, 'Invalid path format for array operation');
       }
-      info = this.normalizeMutationInput(val, method, args);
+      info = normalizeMutationInput(val, method, args);
       const store = this.signalStore.getStore(this.storeName) as StoreInstance;
       return this.executeMutation(store, array, array, info);
     } catch (error) {
-      const methodName = info?.method ?? method ?? 'unknown';
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        methodName,
-        `${String(methodName)} operation failed`,
-        error as Error
-      );
+      return this.mutationFailure(info?.method ?? method ?? 'unknown', error);
     }
   }
 
@@ -291,29 +249,19 @@ export class TypedArrayOperations<
     method: M | 'length',
     ...extra: unknown[]
   ): unknown {
-    try {
-      return this.withArray(false, (_, array) => {
-        if (!Array.isArray(array)) {
-          return this.emptyArrayQueryFallbacks[method]();
-        }
-        return executeArrayQuery(array as U[], method, val as ArrayQueryPredicate<U, M | 'length'>, extra);
-      });
-    } catch (error) {
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        method as ArrayQueryMethod,
-        'Query array operation failed',
-        error as Error
-      );
-    }
+    return this.guard(method, 'Query array operation failed', () =>
+      this.withArray(false, (_, array) =>
+        array ? executeArrayQuery(array as U[], method, val, extra) : emptyArrayQueryFallbacks[method]()
+      )
+    );
   }
 
   deleteFromArray<U = ArrayElementType<T, P>>(predicate: PredicateFn<U> | U) {
-    try {
-      return this.withArray(true, (store, array, oldValue) => {
+    return this.guard('deleteFromArray', 'Delete from array operation failed', () =>
+      this.withArray(true, (store, array, oldValue) => {
         const target = array as U[];
         const oldLength = target.length;
-        const predicateFn = this.asPredicate(predicate);
+        const predicateFn = asPredicate(predicate);
         const indexes: number[] = [];
         const removed: U[] = [];
         target.forEach((item, index, arr) => {
@@ -322,19 +270,18 @@ export class TypedArrayOperations<
             removed.push(item);
           }
         });
-        const filtered = target.filter((item, index, arr) => !predicateFn(item, index, arr));
-        target.length = 0;
-        target.push(...filtered);
-        const newLength = target.length;
-        const orchestrator = this.getOrchestrator(store);
+        if (indexes.length) {
+          // Compact in place, skipping the matched indexes.
+          let write = indexes[0];
+          let next = 0;
+          for (let read = write; read < oldLength; read++) {
+            if (indexes[next] === read) next++;
+            else target[write++] = target[read];
+          }
+          target.length = write;
+        }
         const newValue = store.readStore(this.path as P);
-        orchestrator.finalizeArrayChange(
-          this.path,
-          newValue,
-          oldLength,
-          newLength,
-          indexes.length ? Math.min(...indexes) : null
-        );
+        this.getOrchestrator(store).finalizeArrayChange(this.path, newValue, oldLength, target.length, indexes.length ? indexes[0] : null);
         return {
           method: 'filter',
           path: this.path,
@@ -345,23 +292,16 @@ export class TypedArrayOperations<
           indexes,
           item: removed
         };
-      });
-    } catch (error) {
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        'deleteFromArray',
-        'Delete from array operation failed',
-        error as Error
-      );
-    }
+      })
+    );
   }
 
   deleteByIndex(index: number) {
-    try {
-      return this.withArray(true, (store, array, oldValue) => {
+    return this.guard('deleteByIndex', 'Delete by index operation failed', () =>
+      this.withArray(true, (store, array, oldValue) => {
         const target = array as unknown[];
         const oldLength = target.length;
-        if (index < 0 || index >= target.length) {
+        if (index < 0 || index >= oldLength) {
           store.wakeUpVersionPath(this.path);
           return {
             method: 'splice',
@@ -375,64 +315,19 @@ export class TypedArrayOperations<
           };
         }
         const [removed] = target.splice(index, 1);
-        const orch = this.getOrchestrator(store);
-        const newLength = target.length;
-        orch.finalizeArrayChange(this.path, target, oldLength, newLength, index);
-        const newValue = store.readStore(this.path as P);
+        this.getOrchestrator(store).finalizeArrayChange(this.path, target, oldLength, target.length, index);
         const removedItems = removed !== undefined ? [removed] : [];
         return {
           method: 'splice',
           path: this.path,
           args: [{ start: index, deleteCount: 1, items: [] }],
           oldValue,
-          newValue,
+          newValue: store.readStore(this.path as P),
           removedElements: removedItems,
           indexes: removedItems.length ? [index] : [],
           item: removed
         };
-      });
-    } catch (error) {
-      throw StoreErrorFactory.arrayOperation(
-        this.path,
-        'deleteByIndex',
-        'Delete by index operation failed',
-        error as Error
-      );
-    }
+      })
+    );
   }
-}
-
-type ElementTypeFromPath<T, P extends string> = PathValue<T, P> extends readonly (infer V)[] ? V : never;
-
-export class ArrayChain<T extends StoreData, P extends ValidPath<T> & string> {
-  constructor(private readonly ops: TypedArrayOperations<T, P>) {}
-  push(value: ElementTypeFromPath<T, P>): this { this.ops.setArrayMethod(value, 'push'); return this; }
-  unshift(value: ElementTypeFromPath<T, P>): this { this.ops.setArrayMethod(value, 'unshift'); return this; }
-  pop(): this { this.ops.setArrayMethod('pop'); return this; }
-  shift(): this { this.ops.setArrayMethod('shift'); return this; }
-  sort(compareFn?: (a: ElementTypeFromPath<T, P>, b: ElementTypeFromPath<T, P>) => number): this { this.ops.setArrayMethod(compareFn, 'sort'); return this; }
-  splice(start: number, deleteCount = 0, ...items: Array<ElementTypeFromPath<T, P>>): this { this.ops.setArrayMethod({ start, deleteCount, items }, 'splice'); return this; }
-  update(index: number, newValue: ElementTypeFromPath<T, P>): this { this.ops.updateArrayItem<ElementTypeFromPath<T, P>>(index, newValue); return this; }
-  updateByFind(
-    predicateOrValue: ElementTypeFromPath<T, P> | PredicateFn<ElementTypeFromPath<T, P>>,
-    newValue: ElementTypeFromPath<T, P>
-  ): this { this.ops.updateArrayItemByFind<ElementTypeFromPath<T, P>>(predicateOrValue, newValue); return this; }
-  delete(predicateOrValue: ElementTypeFromPath<T, P> | PredicateFn<ElementTypeFromPath<T, P>>): this { this.ops.deleteFromArray<ElementTypeFromPath<T, P>>(predicateOrValue); return this; }
-  deleteByIndex(index: number): this { this.ops.deleteByIndex(index); return this; }
-  find(
-    predicateOrValue: ElementTypeFromPath<T, P> | PredicateFn<ElementTypeFromPath<T, P>>
-  ): ElementTypeFromPath<T, P> | undefined { return this.ops.findInArray<ElementTypeFromPath<T, P>>(predicateOrValue); }
-  findIndex(
-    predicateOrValue: ElementTypeFromPath<T, P> | PredicateFn<ElementTypeFromPath<T, P>>
-  ): number { return this.ops.findIndexInArray<ElementTypeFromPath<T, P>>(predicateOrValue); }
-  filter(
-    predicate: PredicateFn<ElementTypeFromPath<T, P>>
-  ): Array<ElementTypeFromPath<T, P>> { return this.ops.filterArray<ElementTypeFromPath<T, P>>(predicate); }
-  map<R>(mapFn: MapFn<ElementTypeFromPath<T, P>, R>): R[] { return this.ops.mapArray<ElementTypeFromPath<T, P>, R>(mapFn); }
-  reduce<R>(reduceFn: ReduceFn<ElementTypeFromPath<T, P>, R>, initialValue: R): R { return this.ops.reduceArray<ElementTypeFromPath<T, P>, R>(reduceFn, initialValue); }
-  some(predicate: PredicateFn<ElementTypeFromPath<T, P>>): boolean { return this.ops.someArray<ElementTypeFromPath<T, P>>(predicate); }
-  every(predicate: PredicateFn<ElementTypeFromPath<T, P>>): boolean { return this.ops.everyArray<ElementTypeFromPath<T, P>>(predicate); }
-  includes(value: ElementTypeFromPath<T, P>): boolean { return this.ops.includesInArray<ElementTypeFromPath<T, P>>(value); }
-  indexOf(value: ElementTypeFromPath<T, P>): number { return this.ops.indexOfInArray<ElementTypeFromPath<T, P>>(value); }
-  length(): number { return this.ops.lengthOfArray(); }
 }

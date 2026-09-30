@@ -4,8 +4,6 @@ import { CreateStoreService } from '../core/create-store.core';
 import { isArrayPath } from '../types/type-guards';
 import { buildArrayQueryCacheKey } from './array-query-key.utils';
 
-export type ArrayPredicate<T> = (value: T, index: number, array: T[]) => boolean;
-
 export interface ProxyCacheEntry<T extends object> {
   [key: string]: WeakRef<T> | undefined;
 }
@@ -22,61 +20,26 @@ type FastArrayMutationStore<T extends StoreData> = IStoreInstance<T> & {
   ) => unknown;
 };
 
-export class ArrayMethodHandler {
-  private static readonly EMPTY_ARGS: unknown[] = [];
-  private static readonly mutationArgNormalizers: Record<ArrayMutationMethod, MutationArgNormalizer> = {
-    splice: (args) => ArrayMethodHandler.normalizeSpliceArgs(args),
-    push: (args) => ArrayMethodHandler.normalizeVariadicArgs(args),
-    unshift: (args) => ArrayMethodHandler.normalizeVariadicArgs(args),
-    sort: (args) => ArrayMethodHandler.normalizeSingleArg(args),
-    pop: () => ArrayMethodHandler.normalizeNoArgs(),
-    shift: () => ArrayMethodHandler.normalizeNoArgs(),
-    reverse: () => ArrayMethodHandler.normalizeNoArgs()
-  };
+const EMPTY_ARGS: unknown[] = [];
+const noArgs: MutationArgNormalizer = () => ({ value: undefined, extra: EMPTY_ARGS });
+const singleArg: MutationArgNormalizer = (args) => ({ value: args[0], extra: EMPTY_ARGS });
+const variadicArgs: MutationArgNormalizer = (args) =>
+  ({ value: args[0], extra: args.length <= 1 ? EMPTY_ARGS : args.slice(1) });
 
-  private static normalizeMutationArgs(keyStr: ArrayMutationMethod, args: unknown[]): { value: unknown; extra: unknown[] } {
-    return ArrayMethodHandler.mutationArgNormalizers[keyStr](args);
-  }
-
-  private static normalizeSpliceArgs(args: unknown[]): NormalizedMutationArgs {
+const mutationArgNormalizers: Record<ArrayMutationMethod, MutationArgNormalizer> = {
+  splice: (args) => {
     const [start, deleteCount, ...items] = args;
     return { value: { start, deleteCount: args.length > 1 ? deleteCount : undefined, items }, extra: [] };
-  }
+  },
+  push: variadicArgs,
+  unshift: variadicArgs,
+  sort: singleArg,
+  pop: noArgs,
+  shift: noArgs,
+  reverse: noArgs
+};
 
-  private static normalizeVariadicArgs(args: unknown[]): NormalizedMutationArgs {
-    return args.length <= 1
-      ? { value: args[0], extra: ArrayMethodHandler.EMPTY_ARGS }
-      : { value: args[0], extra: args.slice(1) };
-  }
-
-  private static normalizeSingleArg(args: unknown[]): NormalizedMutationArgs {
-    return { value: args[0], extra: ArrayMethodHandler.EMPTY_ARGS };
-  }
-
-  private static normalizeNoArgs(): NormalizedMutationArgs {
-    return { value: undefined, extra: ArrayMethodHandler.EMPTY_ARGS };
-  }
-
-  static createMutatingMethod<T extends StoreData, R = unknown>(
-    keyStr: ArrayMutationMethod,
-    targetPath: string,
-    storeInstance: IStoreInstance<T>,
-    afterMutation?: () => void,
-    arrayRef?: unknown[]
-  ): (...args: unknown[]) => R | undefined {
-    return function (this: unknown, ...args: unknown[]) {
-      const calledAsMethod = this !== undefined && this !== globalThis;
-      return ArrayMethodHandler.executeMutatingMethod<T, R>(
-        keyStr,
-        targetPath,
-        storeInstance,
-        args,
-        afterMutation,
-        calledAsMethod ? arrayRef : undefined
-      );
-    }
-  }
-
+export class ArrayMethodHandler {
   static executeMutatingMethod<T extends StoreData, R = unknown>(
     keyStr: ArrayMutationMethod,
     targetPath: string,
@@ -89,7 +52,7 @@ export class ArrayMethodHandler {
       const current = arrayRef ?? storeInstance.readStore?.(targetPath);
       return (Array.isArray(current) ? current.length : undefined) as R | undefined;
     }
-    const { value, extra } = ArrayMethodHandler.normalizeMutationArgs(keyStr, args);
+    const { value, extra } = mutationArgNormalizers[keyStr](args);
     let result: unknown;
     const fastStore = storeInstance as FastArrayMutationStore<T>;
 
@@ -111,13 +74,14 @@ export class ArrayMethodHandler {
     cache?: ProxyCacheEntry<R>
   ): (...args: unknown[]) => R | undefined {
     return (...args: unknown[]) => {
-      const firstArg = args[0];
       if (!ArrayMethodHandler.isValidArrayPath<T>(storeInstance, targetPath)) {
         return undefined;
       }
+      const firstArg = args[0];
+      const rest = args.slice(1);
 
       // Build a stable cache key using shared util
-      const cacheKey = buildArrayQueryCacheKey(targetPath, keyStr, firstArg, args.slice(1));
+      const cacheKey = buildArrayQueryCacheKey(targetPath, keyStr, firstArg, rest);
 
       if (cache) {
         const ref = cache[cacheKey];
@@ -131,10 +95,10 @@ export class ArrayMethodHandler {
       const createService = (storeInstance as { getCreateService?: CreateStoreService }).getCreateService;
       let result: R | undefined;
       if (createService && typeof createService.createArrayQueryComputed === 'function') {
-        result = createService.createArrayQueryComputed(targetPath, keyStr, firstArg, ...args.slice(1)) as R;
+        result = createService.createArrayQueryComputed(targetPath, keyStr, firstArg, ...rest) as R;
       } else {
         // Fallback: non-reactive query
-        result = storeInstance.queryArray(targetPath as StrictPath<T>, firstArg as never, keyStr as never, ...args.slice(1)) as R;
+        result = storeInstance.queryArray(targetPath as StrictPath<T>, firstArg as never, keyStr as never, ...rest) as R;
       }
 
       if (cache && result !== undefined) {
@@ -153,7 +117,7 @@ export class ArrayMethodHandler {
    * Type guard to validate array paths
    */
   static isValidArrayPath<T extends StoreData>(
-    storeInstance: IStoreInstance<T>, 
+    storeInstance: IStoreInstance<T>,
     path: string
   ): path is StrictPath<T> {
     return isArrayPath(storeInstance, path);
