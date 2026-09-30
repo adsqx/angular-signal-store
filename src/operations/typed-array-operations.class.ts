@@ -1,5 +1,5 @@
 import type {
-  StoreData, ArrayMutationMethod, ArrayQueryMethod, PredicateFn, MapFn, ReduceFn, PathValue, ValidPath, SpliceOperation
+  StoreData, ArrayMutationMethod, PredicateFn, MapFn, ReduceFn, PathValue, ValidPath, SpliceOperation
 } from '../types/advanced-types';
 import { StoreErrorFactory } from '../types/errors';
 import type { SignalStore } from '../core/signal-store.service';
@@ -11,13 +11,6 @@ import { ArrayQueryMethodWithLength, asPredicate, executeArrayQuery } from '../u
 export { ArrayChain } from './array-chain';
 
 export type ArrayElementType<T, P extends string> = PathValue<T, P> extends readonly (infer V)[] ? V : never;
-type ArrayQueryPredicate<E, M extends ArrayQueryMethodWithLength> =
-  M extends 'find' | 'findIndex' | 'filter' | 'some' | 'every' ? PredicateFn<E> :
-  M extends 'map' ? MapFn<E, unknown> :
-  M extends 'reduce' ? ReduceFn<E, unknown> :
-  M extends 'includes' | 'indexOf' ? E :
-  undefined;
-
 type NormalizedMutationInput = { method: ArrayMutationMethod; payload: unknown; devArgs: unknown[] };
 type MutationInputNormalizer = (value: unknown, args: unknown[]) => NormalizedMutationInput;
 
@@ -47,18 +40,8 @@ const mutationInputNormalizers: Record<ArrayMutationMethod, MutationInputNormali
 };
 
 /** What a query answers when the path holds no array yet. */
-const emptyArrayQueryFallbacks: Record<ArrayQueryMethodWithLength, () => unknown> = {
-  length: () => 0,
-  filter: () => [],
-  map: () => [],
-  find: () => undefined,
-  findIndex: () => undefined,
-  reduce: () => undefined,
-  some: () => undefined,
-  every: () => undefined,
-  includes: () => undefined,
-  indexOf: () => undefined
-};
+const emptyQueryResult = (method: ArrayQueryMethodWithLength): unknown =>
+  method === 'length' ? 0 : method === 'filter' || method === 'map' ? [] : undefined;
 
 function normalizeMutationInput(a: unknown, method: ArrayMutationMethod | undefined, args: unknown[]): NormalizedMutationInput {
   if (a === 'pop' || a === 'shift') return mutationInputNormalizers[a](undefined, args);
@@ -89,10 +72,14 @@ export class TypedArrayOperations<
     }
   }
 
-  private withArray<R>(strict: boolean, fn: (store: CreateStore, array: unknown[] | undefined, value: unknown) => R): R {
+  private assertValidPath(): void {
     if (!PathUtils.isValidPath(this.path)) {
       throw StoreErrorFactory.pathValidation(this.path, 'Invalid path format for array operation');
     }
+  }
+
+  private withArray<R>(strict: boolean, fn: (store: CreateStore, array: unknown[] | undefined, value: unknown) => R): R {
+    this.assertValidPath();
     const store = this.signalStore.getStore(this.storeName);
     const ref = PathUtils.getByPath(store.returnStore(), this.path as P);
     if (ref !== undefined && !Array.isArray(ref)) {
@@ -169,9 +156,7 @@ export class TypedArrayOperations<
   setArrayMethodOnRef(array: unknown[], val: unknown, method: ArrayMutationMethod, ...args: unknown[]): unknown {
     let info: NormalizedMutationInput | undefined;
     try {
-      if (!PathUtils.isValidPath(this.path)) {
-        throw StoreErrorFactory.pathValidation(this.path, 'Invalid path format for array operation');
-      }
+      this.assertValidPath();
       info = normalizeMutationInput(val, method, args);
       return this.executeMutation(this.signalStore.getStore(this.storeName), array, array, info);
     } catch (error) {
@@ -188,15 +173,9 @@ export class TypedArrayOperations<
   queryArray<U = ArrayElementType<T, P>>(val: U, method: 'includes'): boolean;
   queryArray<U = ArrayElementType<T, P>>(val: U, method: 'indexOf'): number;
   queryArray<U = ArrayElementType<T, P>>(_: unknown, method: 'length'): number;
-  queryArray<M extends ArrayQueryMethod, U = ArrayElementType<T, P>>(
-    val: ArrayQueryPredicate<U, M | 'length'>,
-    method: M | 'length',
-    ...extra: unknown[]
-  ): unknown {
+  queryArray(val: unknown, method: ArrayQueryMethodWithLength, ...extra: unknown[]): unknown {
     return this.guard(method, 'Query array operation failed', () =>
-      this.withArray(false, (_, array) =>
-        array ? executeArrayQuery(array as U[], method, val, extra) : emptyArrayQueryFallbacks[method]()
-      )
+      this.withArray(false, (_, array) => (array ? executeArrayQuery(array, method, val, extra) : emptyQueryResult(method)))
     );
   }
 

@@ -35,11 +35,9 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
   setValue<P extends string>(path: P, value: PathValue<T, P>): void;
   setValue(path: string, value: unknown): void;
   setValue(path: string, value: unknown): void {
-    if (!PathUtils.isValidPath(path)) {
-      throw StoreErrorFactory.pathValidation(path, 'Invalid path format for setValue');
-    }
+    const normalized = this.validPath(path, 'setValue');
     try {
-      this.writeObserve(PathUtils.normalizePath(path), value);
+      this.writeObserve(normalized, value);
     } catch (error) {
       // Same nesting as the former setValue -> setValueObserve pair.
       throw StoreErrorFactory.pathAccess(path, 'setValue', StoreErrorFactory.pathAccess(path, 'setValueObserve', error as Error));
@@ -62,9 +60,7 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
   deleteValue(path: string): void;
   deleteValue(path: string): void {
     try {
-      if (!PathUtils.isValidPath(path)) {
-        throw StoreErrorFactory.pathValidation(path, 'Invalid path format for delete operation');
-      }
+      this.validPath(path, 'delete operation');
       this.setValue(path, undefined); // undefined removes the key
     } catch (error) {
       throw StoreErrorFactory.pathAccess(path, 'deleteValue', error as Error);
