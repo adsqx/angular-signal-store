@@ -3,7 +3,7 @@ import { Signal, WritableSignal, computed } from '@angular/core';
 import { PathUtils } from '../utils/path-utils';
 import type { ProxyCallable } from '../interfaces/types';
 import { SignalStore } from './signal-store.service';
-import { ComputedService, type ArrayQueryPredicate } from './services/computed.manager';
+import { ComputedService } from './services/computed.manager';
 import { BehaviorService } from './services/behavior.manager';
 import { ProxyCacheManager, CacheMetrics } from './services/proxy-cache.manager';
 import { ManagerCtx } from './services/manager-ctx';
@@ -214,7 +214,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
             : undefined,
     ...args: unknown[]
   ): Signal<R> | undefined {
-    return this.computedSvc.createArrayQueryComputed(path, method, predicate as ArrayQueryPredicate<E, M>, ...args) as Signal<R> | undefined;
+    return this.computedSvc.createArrayQueryComputed(path, method, predicate, ...args) as Signal<R> | undefined;
   }
 
   registerPipelineComputed(path: string, signalRef: Signal<unknown>): void { this.computedSvc.registerPipelineComputed(path, signalRef); }

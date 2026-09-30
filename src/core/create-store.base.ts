@@ -2,7 +2,7 @@ import { TypedArrayOperations, ArrayChain } from '../operations/typed-array-oper
 import { PathUtils } from '../utils/path-utils';
 import type { SignalStore } from './signal-store.service';
 import { CreateStoreService } from './create-store.core';
-import type { WakeUpPathOptions } from './wake/wake-types';
+import { NO_WAKE_OPTIONS, type WakeUpPathOptions } from './wake/wake-types';
 import type { AngularStoreDevtools } from './devtools-contract';
 import { StoreDevtools } from './store-devtools';
 import { StoreMutator } from './mutation';
@@ -74,17 +74,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
   ) {
     this.createService = new CreateStoreService<T>(storeName, signalStore);
     this.devtools = new StoreDevtools(signalStore, storeName, devService, this.createService);
-    const self = this;
-    this.mutator = new StoreMutator(
-      {
-        get store() { return self.store; },
-        batch: (fn) => this.batch(fn),
-        readStore: (path) => signalStore.read(storeName, path),
-        wakeUpMutationPath: (path, value, options) => this.wakeUpMutationPath(path, value, options)
-      },
-      this.createService,
-      this.devtools
-    );
+    this.mutator = new StoreMutator(() => this.store, this.createService, this.devtools);
 
     if (!storeName || typeof storeName !== 'string') {
       throw StoreErrorFactory.pathValidation(storeName, 'Store name must be a non-empty string');
@@ -148,9 +138,20 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     this.preciseMutationWake = enabled;
   }
 
-  // Wakes only the changed leaves + the branch itself (no syncDescendants); see StoreMutator.commitPrecise.
+  /**
+   * Fine-grained commit: write the branch, then wake only the branch itself and the changed leaves
+   * (no descendant sync). `relPaths` are leaf paths relative to `branch`.
+   */
   commitMutationPrecise(branch: string, value: unknown, relPaths: readonly string[]): void {
-    this.mutator.commitPrecise(branch, value, relPaths);
+    const normalizedBranch = PathUtils.normalizePath(branch);
+    this.batch(() => {
+      this.mutator.put(normalizedBranch, value);
+      this.wakeUpMutationPath(normalizedBranch, value, NO_WAKE_OPTIONS);
+      for (const rel of relPaths) {
+        const leaf = `${normalizedBranch}.${rel}`;
+        this.wakeUpMutationPath(leaf, this.signalStore.read(this.storeName, leaf), NO_WAKE_OPTIONS);
+      }
+    });
   }
 
   // ------------------

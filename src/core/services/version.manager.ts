@@ -5,7 +5,7 @@ import { FlatStoreMap } from '../../utils/flat-store-map';
 
 const newVersion = () => signal(0);
 
-/** VersionManager: stores one version signal per path. */
+/** One version signal per path. */
 export class VersionManager {
   private readonly nodes = new FlatStoreMap<WritableSignal<number>>();
   /** Set on first `get`; `cleanup` stays silent (no devtools event) until then. */
@@ -32,13 +32,8 @@ export class VersionManager {
     if (this.ctx.devActive) this.emitDevtools('remove', pathPrefix);
   }
 
-  keys(): string[] {
-    return this.nodes.keys();
-  }
-
-  hasNodes(): boolean {
-    return this.nodes.size > 0;
-  }
+  keys(): string[] { return this.nodes.keys(); }
+  hasNodes(): boolean { return this.nodes.size > 0; }
 
   /** Keys strictly below `prefix`, in insertion order. */
   descendants(prefix: string): string[] {
@@ -49,7 +44,7 @@ export class VersionManager {
     return keys;
   }
 
-  private emitDevtools(action: 'add' | 'remove' | 'update', path = ''): void {
+  private emitDevtools(action: 'remove' | 'update', path = ''): void {
     this.ctx.emit({
       type: 'VERSION_STORE_UPDATE',
       payload: { storeName: this.ctx.storeName, action, path: path && PathUtils.normalizePath(path), keys: this.keys(), graph: undefined }

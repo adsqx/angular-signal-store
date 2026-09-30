@@ -4,15 +4,7 @@ import { getBySegmentsCore } from '../utils/path-core';
 import type { CreateStoreService } from './create-store.core';
 import { CursorManager } from './services/cursor.manager';
 import type { StoreDevtools } from './store-devtools';
-import { NO_WAKE_OPTIONS, wakeOptions, type WakeUpPathOptions } from './wake/wake-types';
-
-/** What the mutation pipeline needs from the store that owns it (`store` is read live: it may be reassigned). */
-export interface MutationHost {
-  readonly store: StoreData;
-  batch<R>(fn: () => R): R;
-  readStore(path: string): unknown;
-  wakeUpMutationPath(path: string, value: unknown, options?: WakeUpPathOptions): boolean;
-}
+import { wakeOptions } from './wake/wake-types';
 
 /**
  * The single write pipeline of a store: cursor write, optional key removal, wake, devtools,
@@ -22,7 +14,8 @@ export class StoreMutator {
   private cursorRef?: CursorManager;
 
   constructor(
-    private readonly host: MutationHost,
+    /** The store data, read live: the store may be reassigned. */
+    private readonly getStore: () => StoreData,
     private readonly service: CreateStoreService,
     private readonly devtools: StoreDevtools
   ) {}
@@ -55,23 +48,6 @@ export class StoreMutator {
     if (remove) queueMicrotask(() => this.cleanupPath(normalized));
   }
 
-  /**
-   * Fine-grained commit: write the branch, then wake only the branch itself and the changed leaves
-   * (no descendant sync). `relPaths` are leaf paths relative to `branch`.
-   */
-  commitPrecise(branch: string, value: unknown, relPaths: readonly string[]): void {
-    const host = this.host;
-    const normalizedBranch = PathUtils.normalizePath(branch);
-    host.batch(() => {
-      this.put(normalizedBranch, value);
-      host.wakeUpMutationPath(normalizedBranch, value, NO_WAKE_OPTIONS);
-      for (const rel of relPaths) {
-        const leaf = `${normalizedBranch}.${rel}`;
-        host.wakeUpMutationPath(leaf, host.readStore(leaf), NO_WAKE_OPTIONS);
-      }
-    });
-  }
-
   /** Drop everything derived from `normalized` (behaviors, computeds, versions, proxies, cursor plans). */
   cleanupPath(normalized: string): void {
     const service = this.service;
@@ -95,17 +71,18 @@ export class StoreMutator {
     this.cursorRef?.clearCaches();
   }
 
-  /** Cursor write; returns the previous value. */
-  private put(normalized: string, value: unknown): unknown {
+  /** Cursor write at a normalized path; returns the previous value. */
+  put(normalized: string, value: unknown): unknown {
     const cursor = this.cursor;
-    return cursor.mutateNode(this.host.store as Record<string, unknown>, cursor.applyPathPlan(normalized), normalized, value);
+    return cursor.mutateNode(this.getStore() as Record<string, unknown>, cursor.applyPathPlan(normalized), normalized, value);
   }
 
   /** Remove the key (or splice the index, for arrays) at `normalized`; a missing or primitive parent is a no-op. */
   private deleteAt(normalized: string): void {
     const segments = PathUtils.splitNormalizedPath(normalized);
     const last = segments[segments.length - 1];
-    const parent = segments.length > 1 ? getBySegmentsCore(this.host.store, segments.slice(0, -1)) : this.host.store;
+    const store = this.getStore();
+    const parent = segments.length > 1 ? getBySegmentsCore(store, segments.slice(0, -1)) : store;
     if (parent == null || typeof parent !== 'object') return;
     if (!Array.isArray(parent)) {
       delete (parent as Record<string, unknown>)[last];

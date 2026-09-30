@@ -1,153 +1,91 @@
-import { ProxyFactoryConfig } from '../interfaces/proxy-factory-config.interface';
-import { ILogger } from '../interfaces/logger.interface';
-import { StoreProxy, ProxyCallable } from '../interfaces/types';
-import { IStoreInstance } from '../interfaces/store-instance.interface';
+import type { StoreProxy, ProxyCallable } from '../interfaces/types';
+import type { IStoreInstance } from '../interfaces/store-instance.interface';
 import { createNodeProxy, createRootProxy, type ProxyContext } from './proxy-node';
 import { asHost, serviceOf, type StoreHost } from './store-host';
 import { createWriteFns } from './store-writes';
-import { StoreData } from '../types/advanced-types';
-import { SignalStore } from '../core/signal-store.service';
-import { CreateStoreService } from '../core/create-store.core';
-import type { CacheMetrics } from '../core/services/proxy-cache.manager';
+import type { StoreData } from '../types/advanced-types';
+import type { SignalStore } from '../core/signal-store.service';
+import type { CreateStoreService } from '../core/create-store.core';
 import { readPath } from '../utils/abstracts/path-reader';
 
+/** Configuration of a `ProxyFactory` (one per named store). */
+export interface ProxyFactoryConfig {
+  storeName: string;
+  signalStore: SignalStore;
+  createStoreService: CreateStoreService;
+  /** Reports cache metrics while dev tools are active. */
+  metricsCallback: (storeName: string, metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) => void;
+  /** Maximum number of entries in the proxy cache (default 1000). */
+  maxCacheSize?: number;
+  /** Read dot paths by scanning the string instead of splitting it. */
+  useInPlaceIteration?: boolean;
+  /** Strict: throw on invalid paths instead of warn. */
+  strictInvalidPath?: boolean;
+  /** Strict: forbid root-level rxjs methods. */
+  strictRootRxjs?: boolean;
+  /** Strict: disallow delete (set undefined). */
+  strictDeleteUndefined?: boolean;
+  /** Whether rxjs methods are allowed on the root proxy (default true). */
+  rxjsAllowedOnRoot?: boolean;
+}
+
+/** Builds the proxy tree of one store and owns its proxy-cache metrics timer. */
 export class ProxyFactory {
-  private readonly maxCacheSize: number;
-  private readonly logger: ILogger;
-  private readonly metricsCallback?: (storeName: string, metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) => void;
-  private readonly storeName?: string;
-  private readonly signalStore: SignalStore;
-  private readonly useInPlaceIteration: boolean;
-  private readonly createStoreService: CreateStoreService;
-  private readonly strictInvalidPath: boolean;
-  private readonly strictRootRxjs: boolean;
-  private readonly strictDeleteUndefined: boolean;
-  private readonly rxjsAllowedOnRoot: boolean;
   private metricsIntervalId: ReturnType<typeof setInterval> | null = null;
 
-  constructor(config: ProxyFactoryConfig = {}) {
-    this.maxCacheSize = config.maxCacheSize ?? 1000;
-    this.logger = config.logger ?? console;
-    this.metricsCallback = config.metricsCallback;
-    this.storeName = config.storeName;
-    this.signalStore = config.signalStore!;
-    this.useInPlaceIteration = config.useInPlaceIteration ?? false;
-    this.createStoreService = config.createStoreService!;
-    this.strictInvalidPath = !!config.strictInvalidPath;
-    this.strictRootRxjs = !!config.strictRootRxjs;
-    this.strictDeleteUndefined = !!config.strictDeleteUndefined;
-    this.rxjsAllowedOnRoot = config.rxjsAllowedOnRoot ?? true;
-    this.configureProxyCacheLimit();
-
-    if (this.metricsCallback && this.storeName) {
-      this.updateMetricsTimer(!!this.signalStore?.devActive);
-    }
+  constructor(private readonly config: ProxyFactoryConfig) {
+    config.signalStore.setProxyCacheLimit(config.storeName, config.maxCacheSize ?? 1000);
+    this.updateMetricsTimer(!!config.signalStore.devActive);
   }
 
-  public updateMetricsTimer(active: boolean) {
-    if (!this.metricsCallback || !this.storeName) return;
+  updateMetricsTimer(active: boolean): void {
+    const { storeName, createStoreService, metricsCallback } = this.config;
     if (active) {
-      if (this.metricsIntervalId) return;
-      this.metricsIntervalId = setInterval(() => {
-        const metrics = this.createStoreService.getProxyCacheMetrics();
-        if (this.metricsCallback) {
-          this.metricsCallback(this.storeName!, metrics);
-        }
-      }, 2000);
-    } else {
-      if (this.metricsIntervalId) {
-        clearInterval(this.metricsIntervalId);
-        this.metricsIntervalId = null;
-      }
-    }
-  }
-
-  destroy() {
-    if (this.storeName) {
-      this.createStoreService.resetProxyCache();
-      this.clearProxyCacheLimit();
-    }
-    if (this.metricsIntervalId) {
+      this.metricsIntervalId ??= setInterval(() => metricsCallback(storeName, createStoreService.getProxyCacheMetrics()), 2000);
+    } else if (this.metricsIntervalId) {
       clearInterval(this.metricsIntervalId);
       this.metricsIntervalId = null;
     }
   }
 
-  getCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[]; cacheDump: Array<{ key: string; value: string }> } {
-    if (!this.storeName) {
-      return { hits: 0, misses: 0, hitRate: 0, cacheSize: 0, cacheKeys: [], cacheDump: [] };
-    }
-    const metrics = this.createStoreService.getProxyCacheMetrics();
-    const cacheDump = this.createStoreService.getProxyCacheDump();
-    return {
-      ...metrics,
-      cacheSize: metrics.cacheKeys.length,
-      cacheKeys: metrics.cacheKeys,
-      cacheDump
-    };
+  destroy(): void {
+    this.resetCache();
+    this.config.signalStore.clearProxyCacheLimit(this.config.storeName);
+    this.updateMetricsTimer(false);
   }
 
-  resetCache() {
-    if (this.storeName) {
-      this.createStoreService.resetProxyCache();
-    }
+  getCacheMetrics() {
+    const service = this.config.createStoreService;
+    return { ...service.getProxyCacheMetrics(), cacheDump: service.getProxyCacheDump() };
   }
 
-  private recordCacheHit() {
-    if (this.storeName) {
-      this.createStoreService.recordProxyCacheHit();
-    }
-  }
-
-  private recordCacheMiss() {
-    if (this.storeName) {
-      this.createStoreService.recordProxyCacheMiss();
-    }
-  }
-
-  private configureProxyCacheLimit(): void {
-    if (!this.storeName || !this.signalStore) return;
-    this.signalStore.setProxyCacheLimit(this.storeName, this.maxCacheSize);
-  }
-
-  private clearProxyCacheLimit(): void {
-    if (!this.storeName || !this.signalStore) return;
-    this.signalStore.clearProxyCacheLimit(this.storeName);
+  resetCache(): void {
+    this.config.createStoreService.resetProxyCache();
   }
 
   private getValueIteratively(host: StoreHost, path: string): unknown {
     const root = host.store;
-    if (this.useInPlaceIteration && path.indexOf('[') === -1) {
-      return this.readDotPathInPlace(root, path);
-    }
-    return readPath(root, path);
-  }
-
-  private readDotPathInPlace(root: Record<string, unknown> | undefined, path: string): unknown {
+    if (!this.config.useInPlaceIteration || path.indexOf('[') !== -1) return readPath(root, path);
     if (!root || !path) return undefined;
     let current: unknown = root;
     let start = 0;
-
     for (let i = 0; i <= path.length; i++) {
       if (i !== path.length && path.charCodeAt(i) !== 46) continue;
       if (current == null) return undefined;
-      const segment = path.slice(start, i);
-      current = (current as Record<string, unknown>)[segment];
+      current = (current as Record<string, unknown>)[path.slice(start, i)];
       start = i + 1;
     }
-
     return current;
   }
 
   private cacheMake(path: string, host: StoreHost, make: (path: string) => ProxyCallable): ProxyCallable {
-    const service = this.createStoreService;
+    const service = this.config.createStoreService;
     const cached = service.getProxyCacheEntry(path);
     if (cached) {
-      this.recordCacheHit();
+      service.recordProxyCacheHit();
       return cached;
     }
-
-    this.recordCacheMiss();
+    service.recordProxyCacheMiss();
 
     const callableProxy = make(path);
     service.setProxyCacheEntry(callableProxy, path);
@@ -170,28 +108,29 @@ export class ProxyFactory {
   }
 
   createStoreProxy<T extends StoreData>(storeInstance: IStoreInstance<T>): StoreProxy<T> {
+    const { strictInvalidPath = false, strictDeleteUndefined = false, strictRootRxjs = false, rxjsAllowedOnRoot = true } = this.config;
     const host = asHost(storeInstance);
     const { setFn, deleteFn } = createWriteFns(host, {
-      strictInvalidPath: this.strictInvalidPath,
-      strictDeleteUndefined: this.strictDeleteUndefined,
-      warn: (message) => this.logger.warn(message),
+      strictInvalidPath,
+      strictDeleteUndefined,
+      warn: (message) => console.warn(message),
     });
 
     const make = (path: string): ProxyCallable => createNodeProxy(ctx, path);
     const ctx: ProxyContext = {
       host,
       service: serviceOf(host),
-      strictInvalidPath: this.strictInvalidPath,
-      strictDeleteUndefined: this.strictDeleteUndefined,
+      strictInvalidPath,
+      strictDeleteUndefined,
       setFn,
       deleteFn,
-      throwOnRootRxjs: !this.rxjsAllowedOnRoot && this.strictRootRxjs,
+      throwOnRootRxjs: !rxjsAllowedOnRoot && strictRootRxjs,
       readRoot: (path) => this.getValueIteratively(host, path),
       makeChild: (path) => {
         try {
           return this.cacheMake(path, host, make);
         } catch (error) {
-          this.logger.warn(`Error creating proxy for path ${path}:`, error);
+          console.warn(`Error creating proxy for path ${path}:`, error);
           return make(path);
         }
       },

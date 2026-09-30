@@ -3,65 +3,35 @@ import type { CreateStoreService } from '../create-store.core';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import type { ManagerCtx } from './manager-ctx';
 import { PathUtils } from '../../utils/path-utils';
-import { readBySegments } from '../../utils/abstracts/path-reader';
+import { readBySegments, segmentsOf } from '../../utils/abstracts/path-reader';
 import { buildMethodHashSegment } from '../../utils/array-query-key.utils';
-import { executeArrayQuery } from '../../utils/array-query-executor';
-import type {
-  StoreData,
-  ValidPath,
-  ArrayQueryMethod,
-  ArrayElement,
-  PredicateFn,
-  MapFn,
-  ReduceFn,
-  PathValue
-} from '../../types/advanced-types';
+import { executeArrayQuery, type ArrayQueryMethodWithLength } from '../../utils/array-query-executor';
+import type { StoreData } from '../../types/advanced-types';
 
-export type ArrayQueryResult<E, M extends ArrayQueryMethod | 'length'> =
-  M extends 'find' ? E | undefined :
-  M extends 'findIndex' | 'indexOf' ? number :
-  M extends 'filter' | 'map' ? E[] :
-  M extends 'some' | 'every' | 'includes' ? boolean :
-  M extends 'reduce' ? unknown :
-  M extends 'length' ? number :
-  unknown;
+const cloneShallow = (value: unknown): unknown =>
+  !value || typeof value !== 'object' ? value : Array.isArray(value) ? [...value] : { ...(value as Record<string, unknown>) };
 
-export type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
-  M extends 'find' | 'findIndex' | 'filter' | 'some' | 'every' ? PredicateFn<E> :
-  M extends 'map' ? MapFn<E, unknown> :
-  M extends 'reduce' ? ReduceFn<E, unknown> :
-  M extends 'includes' | 'indexOf' ? E :
-  undefined;
-
-/**
- * Manages computed signals graph for a single store instance.
- */
+/** Manages the computed signals of a single store instance. */
 export class ComputedService<TStore extends StoreData = StoreData> {
-  private readonly computedStore = new FlatStoreMap<Signal<unknown>>();
+  private readonly nodes = new FlatStoreMap<Signal<unknown>>();
 
   constructor(
     private readonly core: CreateStoreService<TStore>,
     private readonly ctx: ManagerCtx
   ) {}
 
-  // --- public API used by core ---
-  get<T>(path: ValidPath<TStore> & string): Signal<T> | undefined {
-    const existing = this.computedStore.get(path);
-    if (existing) return existing as Signal<T>;
+  /** The computed signal of `path`, created on first use (none while the path holds `undefined`). */
+  get(path: string): Signal<unknown> | undefined {
+    const existing = this.nodes.get(path);
+    if (existing) return existing;
     this.add(path);
-    return this.computedStore.get(path) as Signal<T> | undefined;
+    return this.nodes.get(path);
   }
 
-  add(path: ValidPath<TStore> & string): void {
-    const normalizedPath = PathUtils.normalizePath(path);
-    if (this.ctx.read(normalizedPath) === undefined) return;
-    if (this.computedStore.has(normalizedPath)) return;
-
-    const s = this.versionedComputed(normalizedPath, (value) =>
-      this.core.getCloneComputedOutputs() ? cloneShallow(value) : value
-    );
-    this.core.setSignalInProxyCache(normalizedPath, s);
-    this.computedStore.set(normalizedPath, s);
+  add(path: string): void {
+    const normalized = PathUtils.normalizePath(path);
+    if (this.ctx.read(normalized) === undefined || this.nodes.has(normalized)) return;
+    this.register(normalized, this.versionedComputed(normalized, (value) => (this.core.getCloneComputedOutputs() ? cloneShallow(value) : value)));
   }
 
   /**
@@ -69,7 +39,7 @@ export class ComputedService<TStore extends StoreData = StoreData> {
    * The resolved version signal is cached so steady-state re-evaluation skips the lookup.
    */
   private versionedComputed<R>(normalizedPath: string, project: (value: unknown) => R): Signal<R> {
-    const pathSegments = this.core.getPathSegments(normalizedPath);
+    const pathSegments = segmentsOf(normalizedPath);
     let cachedVersionPath: string | undefined;
     let versionRef: WritableSignal<number> | undefined;
     return computed(() => {
@@ -83,76 +53,56 @@ export class ComputedService<TStore extends StoreData = StoreData> {
     });
   }
 
-  remove(path: string): void {
-    this.computedStore.deleteByPrefix(path);
-  }
-
-  cleanup(pathPrefix?: string): void {
-    if (!pathPrefix) {
-      this.computedStore.clear();
-    } else {
-      this.computedStore.deleteByPrefix(pathPrefix);
-    }
-  }
-
-  isExists(path: string): boolean {
-    return this.computedStore.has(path);
-  }
-
-  keys(): string[] {
-    return this.computedStore.keys();
-  }
-
-  store(): Record<string, Signal<unknown>> {
-    return this.computedStore.toObject();
-  }
-
-  // Array query computed
-  createArrayQueryComputed<
-    P extends ValidPath<TStore> & string,
-    M extends ArrayQueryMethod | 'length',
-    A = PathValue<TStore, P>,
-    E = ArrayElement<A>,
-    R = ArrayQueryResult<E, M>
-  >(
-    path: P,
-    method: M,
-    predicate: ArrayQueryPredicate<E, M>,
+  /** A computed running `method` over the array at `path` (cached per method and arguments). */
+  createArrayQueryComputed(
+    path: string,
+    method: ArrayQueryMethodWithLength,
+    predicate: unknown,
     ...args: unknown[]
-  ): Signal<R> | undefined {
-    const normalizedPath = PathUtils.normalizePath(path);
-    if (this.ctx.read(normalizedPath) === undefined) return undefined;
+  ): Signal<unknown> | undefined {
+    const normalized = PathUtils.normalizePath(path);
+    if (this.ctx.read(normalized) === undefined) return undefined;
 
-    const keySegment = buildMethodHashSegment(method, predicate, args);
-    const fullPath = [...this.core.getPathSegments(normalizedPath), '$arrayQuery', keySegment].join('.');
+    const fullPath = `${normalized}.$arrayQuery.${buildMethodHashSegment(method, predicate, args)}`;
+    const existing = this.nodes.get(fullPath);
+    if (existing) return existing;
 
-    const existing = this.computedStore.get(fullPath);
-    if (existing) return existing as Signal<R>;
-
-    const s = this.versionedComputed(normalizedPath, (arrayRef): R | undefined => {
+    const signal = this.versionedComputed(normalized, (arrayRef): unknown => {
       if (!Array.isArray(arrayRef)) return undefined;
       try {
-        return executeArrayQuery(arrayRef as E[], method, predicate, args, { cloneFoundObject: true }) as R;
+        return executeArrayQuery(arrayRef, method, predicate, args, { cloneFoundObject: true });
       } catch {
         return undefined;
       }
     });
-    this.core.setSignalInProxyCache(fullPath, s);
-    this.computedStore.set(fullPath, s);
-
+    this.register(fullPath, signal);
     this.emitUpdate('add', fullPath);
-
-    return s as Signal<R>;
+    return signal;
   }
 
   registerPipelineComputed(path: string, signalRef: Signal<unknown>): void {
     if (!signalRef) return;
-    const normalizedPath = PathUtils.normalizePath(path);
-    const existed = this.computedStore.has(normalizedPath);
-    this.computedStore.set(normalizedPath, signalRef);
-    this.core.setSignalInProxyCache(normalizedPath, signalRef);
+    const normalized = PathUtils.normalizePath(path);
+    const existed = this.nodes.has(normalized);
+    this.register(normalized, signalRef);
+    this.emitUpdate(existed ? 'update' : 'add', normalized);
+  }
 
-    this.emitUpdate(existed ? 'update' : 'add', normalizedPath);
+  isExists(path: string): boolean { return this.nodes.has(path); }
+  keys(): string[] { return this.nodes.keys(); }
+  store(): Record<string, Signal<unknown>> { return this.nodes.toObject(); }
+
+  /** Drops the nodes at and below `pathPrefix` (all of them without one). */
+  cleanup(pathPrefix?: string): void {
+    if (pathPrefix) this.nodes.deleteByPrefix(pathPrefix);
+    else this.nodes.clear();
+  }
+
+  remove(path: string): void { this.nodes.deleteByPrefix(path); }
+
+  private register(normalized: string, signal: Signal<unknown>): void {
+    this.core.setSignalInProxyCache(normalized, signal);
+    this.nodes.set(normalized, signal);
   }
 
   private emitUpdate(action: 'add' | 'update', path: string): void {
@@ -162,9 +112,4 @@ export class ComputedService<TStore extends StoreData = StoreData> {
       payload: { storeName: this.ctx.storeName, action, path, keys: this.keys() }
     });
   }
-}
-
-function cloneShallow(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-  return Array.isArray(value) ? [...value] : { ...(value as Record<string, unknown>) };
 }

@@ -2,107 +2,48 @@ import type { BehaviorSubject, Observable } from 'rxjs';
 import { TrackedBehaviorSubject } from './tracked-behavior-subject';
 import type { ManagerCtx } from './manager-ctx';
 import { FlatStoreMap } from '../../utils/flat-store-map';
-import { CleanupScheduler } from '../../utils/cleanup-scheduler';
 import { PathUtils } from '../../utils/path-utils';
 
-const BEHAVIOR_CLEANUP_DELAY_MS = 50;
+/** Grace period before an unobserved BehaviorSubject is completed and dropped. */
+const CLEANUP_DELAY_MS = 50;
 
 interface BehaviorNode {
   subject: BehaviorSubject<unknown>;
   count: number;
 }
 
-function safeNext(subject: BehaviorSubject<unknown>, value: unknown): void {
+function safely(what: string, fn: () => void): void {
   try {
-    subject.next(value);
+    fn();
   } catch (e) {
-    console.warn('BehaviorService emit error:', e);
+    console.warn(`BehaviorService ${what} error:`, e);
   }
 }
 
-function safeComplete(subject: BehaviorSubject<unknown>, context: string): void {
-  try {
-    subject.complete();
-  } catch (e) {
-    console.warn(`BehaviorService ${context} error:`, e);
-  }
-}
+const safeNext = (subject: BehaviorSubject<unknown>, value: unknown) => safely('emit', () => subject.next(value));
+const safeComplete = (subject: BehaviorSubject<unknown>) => safely('cleanup', () => subject.complete());
 
 /**
- * Manages BehaviorSubject cache for a single store instance with subscription tracking and cleanup.
- * One node per path holds the subject and its live subscriber count.
+ * The BehaviorSubjects of a single store instance. One node per path holds the subject and its live
+ * subscriber count; a node nobody observes is completed and dropped after a short delay.
  */
 export class BehaviorService {
   private readonly nodes = new FlatStoreMap<BehaviorNode>();
-  private readonly cleanupScheduler = new CleanupScheduler();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly ctx: ManagerCtx) {}
 
-  private scheduleCleanup(path: string): void {
-    this.cleanupScheduler.schedule(
-      path,
-      () => {
-        const node = this.nodes.get(path);
-        if (!node || node.count > 0) return;
-        safeComplete(node.subject, 'cleanup');
-        this.nodes.delete(path);
-        this.emitSubscriptionStats();
-      },
-      BEHAVIOR_CLEANUP_DELAY_MS
-    );
-  }
+  add(path: string): void { this.node(path); }
+  get(path: string): BehaviorSubject<unknown> { return this.node(path).subject; }
+  getTrackedObservable(path: string): Observable<unknown> { return this.get(path).asObservable(); }
+  hasNodes(): boolean { return this.nodes.size > 0; }
+  isExists(path: string): boolean { return this.nodes.has(path); }
+  keys(): string[] { return this.nodes.keys(); }
 
-  private emitSubscriptionStats(): void {
-    if (!this.ctx.devActive) return;
-    const stats = this.getSubscriptionStats();
-    this.ctx.emit({
-      type: 'BEHAVIOR_STORE_UPDATE',
-      payload: {
-        storeName: this.ctx.storeName,
-        action: 'update',
-        path: 'behavior-subscriptions',
-        keys: [],
-        ...stats,
-        graph: undefined
-      }
-    });
-  }
-
-  private cancelScheduledCleanup(pathPrefix?: string): void {
-    if (!pathPrefix) {
-      this.cleanupScheduler.cancelAll();
-      return;
-    }
-
-    const normalized = PathUtils.normalizePath(pathPrefix);
-    const pref = normalized ? `${normalized}.` : '';
-    for (const key of this.cleanupScheduler.keys()) {
-      if (key === normalized || key.startsWith(pref)) {
-        this.cleanupScheduler.cancel(key);
-      }
-    }
-  }
-
-  // API
-  add(path: string): void {
-    this.node(path);
-  }
-
-  getTrackedObservable(path: string): Observable<unknown> {
-    return this.get(path).asObservable();
-  }
-
-  get(path: string): BehaviorSubject<unknown> {
-    return this.node(path).subject;
-  }
-
-  // Return an existing BehaviorSubject without creating one (peek)
-  peek(path: string): BehaviorSubject<unknown> | undefined {
-    return this.nodes.get(path)?.subject;
-  }
-
-  hasNodes(): boolean {
-    return this.nodes.size > 0;
+  store(): Record<string, BehaviorSubject<unknown>> {
+    const out: Record<string, BehaviorSubject<unknown>> = {};
+    this.nodes.forEach((node, path) => { out[path] = node.subject; });
+    return out;
   }
 
   /**
@@ -111,41 +52,51 @@ export class BehaviorService {
    */
   updateAncestors(ancestors: readonly string[], newValue?: unknown): void {
     for (let i = 0; i < ancestors.length; i++) {
-      const subject = this.peek(ancestors[i]);
-      if (!subject) continue;
-      safeNext(subject, i === 0 ? newValue : this.ctx.read(ancestors[i]));
+      const subject = this.nodes.get(ancestors[i])?.subject;
+      if (subject) safeNext(subject, i === 0 ? newValue : this.ctx.read(ancestors[i]));
     }
   }
 
-  /**
-   * Update all existing BehaviorSubjects under the given prefix (including the prefix unless `skipSelf`).
-   * This keeps nested subscriptions in sync after array reindexing or bulk updates.
-   */
+  /** Re-reads every existing subject under `prefix` (and `prefix` itself unless `skipSelf`), e.g. after array reindexing. */
   updateByPrefix(prefix: string, skipSelf = false): void {
-    const keys = this.nodes.getByPrefix(prefix);
-    if (!keys.length) return;
-    const normalized = PathUtils.normalizePath(prefix);
-    for (const key of keys) {
-      if (skipSelf && key === normalized) continue;
-      const subject = this.peek(key);
-      if (subject) safeNext(subject, this.ctx.read(key));
+    for (const key of this.nodes.getByPrefix(prefix)) {
+      const subject = this.nodes.get(key)?.subject;
+      if (subject && !(skipSelf && key === prefix)) safeNext(subject, this.ctx.read(key));
     }
   }
+
+  /** Completes and drops the nodes at and below `pathPrefix` (all of them without one). */
+  cleanup(pathPrefix?: string): void {
+    if (!pathPrefix) {
+      for (const timer of this.timers.values()) clearTimeout(timer);
+      this.timers.clear();
+      this.nodes.forEach((node) => safeComplete(node.subject));
+      this.nodes.clear();
+      return;
+    }
+    const normalized = PathUtils.normalizePath(pathPrefix);
+    for (const key of Array.from(this.timers.keys())) {
+      if (key === normalized || key.startsWith(`${normalized}.`)) this.cancelTimer(key);
+    }
+    this.nodes.deleteByPrefix(pathPrefix, (_, node) => safeComplete(node.subject));
+  }
+
+  destroy(): void { this.cleanup(); }
 
   private node(path: string): BehaviorNode {
-    return this.nodes.getOrCreate(path, (normalizedPath) => {
+    return this.nodes.getOrCreate(path, (normalized) => {
       const node: BehaviorNode = {
         count: 0,
         subject: new TrackedBehaviorSubject(
-          this.ctx.read(normalizedPath),
+          this.ctx.read(normalized),
           () => {
-            this.cleanupScheduler.cancel(normalizedPath);
+            this.cancelTimer(normalized);
             node.count++;
             this.emitSubscriptionStats();
           },
           () => {
             node.count = node.count > 1 ? node.count - 1 : 0;
-            if (node.count === 0) this.scheduleCleanup(normalizedPath);
+            if (node.count === 0) this.scheduleCleanup(normalized);
             this.emitSubscriptionStats();
           }
         )
@@ -154,51 +105,44 @@ export class BehaviorService {
     });
   }
 
-  getSubscriptionStats(): {
-    totalNodes: number;
-    activeSubscriptions: number;
-    inactiveNodes: number;
-    subscriptionDetails: Array<{ path: string; count: number; hasValue: boolean }>;
-  } {
-    const details: Array<{ path: string; count: number; hasValue: boolean }> = [];
-    this.nodes.forEach((node, path) => details.push({ path, count: node.count, hasValue: true }));
-
-    return {
-      totalNodes: details.length,
-      activeSubscriptions: details.reduce((sum, d) => sum + d.count, 0),
-      inactiveNodes: details.filter((d) => d.count === 0).length,
-      subscriptionDetails: details,
-    };
+  private cancelTimer(path: string): void {
+    clearTimeout(this.timers.get(path));
+    this.timers.delete(path);
   }
 
-  // management
-  isExists(path: string): boolean {
-    return this.nodes.has(path);
+  private scheduleCleanup(path: string): void {
+    this.cancelTimer(path);
+    this.timers.set(path, setTimeout(() => {
+      this.timers.delete(path);
+      try {
+        const node = this.nodes.get(path);
+        if (!node || node.count > 0) return;
+        safeComplete(node.subject);
+        this.nodes.delete(path);
+        this.emitSubscriptionStats();
+      } catch (error) {
+        console.warn(`Cleanup failed for key "${path}":`, error);
+      }
+    }, CLEANUP_DELAY_MS));
   }
 
-  keys(): string[] {
-    return this.nodes.keys();
-  }
-
-  store(): Record<string, BehaviorSubject<unknown>> {
-    const out: Record<string, BehaviorSubject<unknown>> = {};
-    this.nodes.forEach((node, path) => { out[path] = node.subject; });
-    return out;
-  }
-
-  cleanup(pathPrefix?: string): void {
-    this.cancelScheduledCleanup(pathPrefix);
-    if (!pathPrefix) {
-      this.nodes.forEach((node) => safeComplete(node.subject, 'cleanup'));
-      this.nodes.clear();
-      return;
-    }
-
-    this.nodes.deleteByPrefix(pathPrefix, (_, node) => safeComplete(node.subject, 'cleanup'));
-  }
-
-  destroy(): void {
-    this.cleanupScheduler.destroy();
-    this.cleanup();
+  private emitSubscriptionStats(): void {
+    if (!this.ctx.devActive) return;
+    const subscriptionDetails: Array<{ path: string; count: number; hasValue: boolean }> = [];
+    this.nodes.forEach((node, path) => subscriptionDetails.push({ path, count: node.count, hasValue: true }));
+    this.ctx.emit({
+      type: 'BEHAVIOR_STORE_UPDATE',
+      payload: {
+        storeName: this.ctx.storeName,
+        action: 'update',
+        path: 'behavior-subscriptions',
+        keys: [],
+        totalNodes: subscriptionDetails.length,
+        activeSubscriptions: subscriptionDetails.reduce((sum, d) => sum + d.count, 0),
+        inactiveNodes: subscriptionDetails.filter((d) => d.count === 0).length,
+        subscriptionDetails,
+        graph: undefined
+      }
+    });
   }
 }
