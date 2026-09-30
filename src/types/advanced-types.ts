@@ -119,11 +119,6 @@ export type BehaviorSubjectType<T> = import('rxjs').BehaviorSubject<T>;
 // Store instance constraint
 export type StoreData = Record<string, unknown>;
 
-// Expose a shared check for numeric path segment to reduce duplicate regex usage
-export function isNumericSegment(seg: string | undefined): boolean {
-  return !!seg && /^\d+$/.test(seg);
-}
-
 // Helper type for function detection
 type IsFunction<T> = T extends (...args: unknown[]) => unknown ? true : false;
 
@@ -133,9 +128,3 @@ export type CallableProxy<T> = T & {
 } & {
   [K in keyof T]: IsFunction<T[K]> extends true ? T[K] : CallableProxy<T[K]>;
 };
-
-// Branded types for additional type safety
-export type StorePath = string & { readonly __brand: unique symbol };
-
-// Create branded path
-export const createStorePath = (path: string): StorePath => path as StorePath;
