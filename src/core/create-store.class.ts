@@ -30,9 +30,7 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
     installArrayForwarders(CreateStore.prototype);
   }
 
-  // ------------------
   // Writes: overloads are strict path, typed literal fallback, and dynamic string fallback
-  // ------------------
   setValue<P extends PathKeys<T>>(path: P, value: PathValue<T, P>): void;
   setValue<P extends string>(path: P, value: PathValue<T, P>): void;
   setValue(path: string, value: unknown): void;
@@ -73,9 +71,7 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
     }
   }
 
-  // ------------------
   // Reads and reactive accessors
-  // ------------------
   getSignalValue<P extends PathKeys<T>>(path: P): PathValue<T, P> | undefined;
   getSignalValue<P extends string>(path: P): PathValue<T, P> | undefined;
   getSignalValue(path: string): unknown | undefined;
@@ -112,9 +108,7 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
     return this.createService.getObservable(this.validPath(path, 'Observable'));
   }
 
-  // ------------------
   // Wake
-  // ------------------
   wakeup<P extends PathKeys<T>>(path: P, mode?: StoreWakeupMode): void;
   wakeup<P extends string>(path: P, mode?: StoreWakeupMode): void;
   wakeup(path: string, mode: StoreWakeupMode = 'leaf'): void {
@@ -127,9 +121,7 @@ export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBas
     this.wakeup(path, mode);
   }
 
-  // ------------------
   // Array mutation (the other array members: CreateStoreArrayApi)
-  // ------------------
   setArrayMethod<P extends ValidPath<T>>(
     path: P,
     val: PathValue<T, P> extends readonly (infer U)[] ? U : never,

@@ -1,8 +1,6 @@
 import type { StoreHost } from '../store-host';
-import { createPipelineEntry } from './builder';
 import { createMutateMethod, executeMutating } from './mutate';
-import { createReactiveEntry } from './reactive-query';
-import { createLiveQuery, createSnapshotQuery } from './snapshot-query';
+import { createLiveQuery, createPipelineEntry, createReactiveEntry, createSnapshotQuery } from './query';
 import type { Operator } from './types';
 
 type ApiMethod = (...ops: Operator[]) => unknown;

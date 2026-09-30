@@ -49,12 +49,11 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     return this.createService.getBehaviorStore();
   }
 
-  // Single getter for createService (used by proxy handler, TypedArrayOperations, and external consumers)
   get createServiceGetter(): CreateStoreService {
     return this.createService;
   }
 
-  // Alias for backward compatibility (deprecated: use createServiceGetter)
+  // Backward-compatible alias of `createServiceGetter`
   get getCreateService(): CreateStoreService {
     return this.createServiceGetter;
   }
@@ -79,8 +78,6 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     if (!storeName || typeof storeName !== 'string') {
       throw StoreErrorFactory.pathValidation(storeName, 'Store name must be a non-empty string');
     }
-    // Default: sync version bumps for JSON-like read-after-write behavior
-    this.createService.setAutoBatchBumps(false);
 
     // Self-register so getStore(storeName) resolves instances built directly via
     // `new CreateStore(...)` (e.g. tests / advanced usage), not only via the createStore
@@ -92,9 +89,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     return this.store;
   }
 
-  // ------------------
   // Array operations
-  // ------------------
   // Per-path array operations, cached by normalized path (used by the array members and array()).
   protected arrayOps<P extends ValidPath<T> & string>(path: P): TypedArrayOperations<T, P> {
     const normalizedPath = PathUtils.normalizePath(path);
@@ -110,9 +105,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     return new ArrayChain<T, P>(this.arrayOps(path));
   }
 
-  // ------------------
   // Writes
-  // ------------------
   protected validPath(path: string, context: string): string {
     if (!PathUtils.isValidPath(path)) {
       throw StoreErrorFactory.pathValidation(path, `Invalid path format for ${context}`);
@@ -130,8 +123,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     this.mutator.write(path, value, false);
   }
 
-  // Opt-in fine-grained mutate wake (default false = historical behaviour). Mirrors
-  // SolidStoreOptions.preciseMutationWake so both engines behave identically.
+  // Opt-in fine-grained mutate wake (mirrors SolidStoreOptions.preciseMutationWake).
   preciseMutationWake = false;
 
   setPreciseMutationWake(enabled: boolean): void {
@@ -154,9 +146,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     });
   }
 
-  // ------------------
   // Reactive accessors
-  // ------------------
   /** Read (creating on first use) the node of `kind`, announcing it to devtools when it was created. */
   protected reactive(kind: ReactiveKind, path: string): unknown {
     const normalized = this.validPath(path, kind.context);
@@ -185,9 +175,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     return this.createService.computedOf(project);
   }
 
-  // ------------------
   // Wake
-  // ------------------
   updateBehaviorsBySegments(path: string, newValue?: unknown): void {
     this.createService.updateBehaviorsBySegments(path, newValue);
     const normalized = PathUtils.normalizePath(path);
@@ -222,9 +210,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     }
   }
 
-  // ------------------
   // Configuration and lifecycle
-  // ------------------
   setDependencyMode(mode: 'exact' | 'container') { this.createService.setDependencyMode(mode); }
   setTrackReads(enabled: boolean) { this.createService.setTrackReads(enabled); }
   setCloneComputedOutputs(enabled: boolean) { this.createService.setCloneComputedOutputs(enabled); }
@@ -247,7 +233,6 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
   }
 
   enableDevTools(_storeName: string, showVisualizer = true): void {
-    // Visualizer handled globally; nothing to do here besides mounting the panel element
     if (showVisualizer && typeof document !== 'undefined' && !document.querySelector('app-dev-tools')) {
       document.body.appendChild(document.createElement('app-dev-tools'));
     }

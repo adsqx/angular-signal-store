@@ -1,6 +1,6 @@
 import { BehaviorSubject, Observable } from 'rxjs';
 import { Signal, WritableSignal, computed } from '@angular/core';
-import { PathUtils } from '../utils/path-utils';
+import { PathUtils, readBySegments, segmentsOf } from '../utils/path-utils';
 import type { ProxyCallable } from '../interfaces/types';
 import { SignalStore } from './signal-store.service';
 import { ComputedService } from './services/computed.manager';
@@ -24,7 +24,6 @@ import { WakeEngine } from './wake/wake-engine';
 import type { StoreWakeupMode, WakeUpPathOptions } from './wake/wake-types';
 import { selectObservable, warnOnWideDependencies } from './store-select';
 import { hasIndexedKeyFrom } from './indexed-keys';
-import { readBySegments, segmentsOf } from '../utils/abstracts/path-reader';
 
 export type { StoreWakeupMode } from './wake/wake-types';
 
@@ -49,9 +48,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   getTrackReads(): boolean { return this.dependencyTracker.getTrackReads(); }
   isCollectingReads(): boolean { return this.dependencyTracker.isCollecting(); }
 
-  // ------------------
-  // Wake configuration (plain options read by the wake engine on every write)
-  // ------------------
   setDependencyMode(mode: 'exact' | 'container') { this.wake.config.dependencyMode = mode; }
   getDependencyMode(): 'exact' | 'container' { return this.wake.config.dependencyMode; }
   setAutoBatchBumps(enabled: boolean): void { this.wake.config.autoBatch = !!enabled; }
@@ -61,7 +57,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   setPartialInvalidation(enabled: boolean): void { this.wake.config.partial = !!enabled; }
   setVersionBumpStrategy(strategy: 'microtask' | 'raf'): void { this.wake.scheduler.setStrategy(strategy); }
   setVersionBumpThrottle(ms: number): void { this.wake.scheduler.setThrottle(ms); }
-  // Control BehaviorSubject update propagation on writes
   setBehaviorUpdatesEnabled(enabled: boolean) { this.wake.config.behaviors = !!enabled; }
 
   beginAction(): void { this.wake.scheduler.begin(); }
@@ -71,7 +66,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   resolveVersionPath(path: string): string { return this.wake.resolve(PathUtils.normalizePath(path)); }
   resolveVersionPathNormalized(normalized: string): string { return this.wake.resolve(normalized); }
 
-  // Path traversal (delegated to the shared path reader)
   getPathSegments(path: string): readonly string[] { return segmentsOf(path); }
   fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
     return readBySegments(root as Record<string, unknown>, pathSegments);
@@ -81,9 +75,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return (this._computedSvc ??= new ComputedService<TState>(this, this.ctx));
   }
 
-  // ------------------
-  // Wake operations (delegated to the wake engine)
-  // ------------------
   updateBehaviorsBySegments(path: string, newValue?: unknown): void { this.wake.updateBehaviors(path, newValue); }
 
   wakeUpMutationPath(path: string, value: unknown, options?: WakeUpPathOptions, behaviorUpdater?: BehaviorUpdater): boolean {
@@ -105,9 +96,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   wakeUpVersionPathWithMode(path: string, mode: StoreWakeupMode): void { this.wake.bumpByMode(mode, PathUtils.normalizePath(path)); }
 
-  // ------------------
-  // Type-safe selection API: select(fn) and computedOf(fn)
-  // ------------------
   private getStoreProxy(): TState {
     try {
       this._storeProxy ??= this.signalStore.useStore(this.storeName);
@@ -158,9 +146,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     this.wake = new WakeEngine(this.versions, this.behaviors, this.proxyCacheManager);
   }
 
-  // ------------------
-  // Proxy cache operations (delegated to the manager)
-  // ------------------
   hasIndexedProxyCacheFrom(path: string, startIndex: number): boolean { return this.proxyCacheManager.hasIndexedChildAtOrAfter(path, startIndex); }
   deleteIndexedProxyCacheRange(path: string, startIndex: number, endIndex: number): void { this.proxyCacheManager.deleteIndexedRange(path, startIndex, endIndex); }
   getProxyCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[] } { return this.proxyCacheManager.metricsSnapshot(); }
@@ -189,9 +174,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     return (this.observableMethodCache[key] ??= (observable as Record<string, (...args: unknown[]) => unknown>)[method].bind(observable));
   }
 
-  // ------------------
-  // Computed operations (delegated to ComputedService)
-  // ------------------
   createArrayQueryComputed<
     P extends ValidPath<TState> & string,
     M extends ArrayQueryMethod | 'length',
@@ -225,9 +207,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   getComputedStore(): Record<string, Signal<unknown>> { return this.computedSvc.store(); }
   cleanupComputedStore(pathPrefix?: string): void { this.computedSvc.cleanup(pathPrefix); }
 
-  // ------------------
-  // Behavior operations (delegated to BehaviorService)
-  // ------------------
   getObservableWithPipe<T = unknown>(path: string, pipeFn?: (obs: Observable<unknown>) => Observable<T>): Observable<T> {
     const observable = this.behaviors.getTrackedObservable(path);
     return pipeFn ? (pipeFn(observable) as Observable<T>) : (observable as Observable<T>);
@@ -239,7 +218,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   getBehaviorStore(): Record<string, BehaviorSubject<unknown>> { return this.behaviors.store(); }
   cleanupBehaviorStore(pathPrefix?: string): void { this.behaviors.cleanup(pathPrefix); }
 
-  // Refresh existing BehaviorSubjects under a prefix (incl. nested paths)
   updateBehaviorByPrefix(pathPrefix: string, options?: { skipSelf?: boolean }): void {
     this.wake.updateBehaviorsByPrefix(pathPrefix, !!options?.skipSelf);
   }
@@ -256,9 +234,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     this.usingComputedStoreFallback = false;
   }
 
-  // ------------------
-  // Version operations
-  // ------------------
   getVersion(path: string): WritableSignal<number> {
     const normalized = PathUtils.normalizePath(path);
     const version = this.versions.get(normalized);

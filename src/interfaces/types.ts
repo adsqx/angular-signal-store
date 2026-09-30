@@ -1,9 +1,3 @@
-// src/app/store/interfaces/types.ts
-
-/**
- * Shared types for the store library – refined for strong typing.
- */
-
 import type { CallableProxy, SignalType, StoreData } from '../types/advanced-types';
 import type { IStoreInstance } from './store-instance.interface';
 

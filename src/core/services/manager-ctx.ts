@@ -1,7 +1,6 @@
 import type { SignalStore } from '../signal-store.service';
-import { emitDevEvent } from '../devtools-bus';
-import { PathUtils } from '../../utils/path-utils';
-import { readBySegments } from '../../utils/abstracts/path-reader';
+import { emitDevEvent } from '../devtools-contract';
+import { PathUtils, readBySegments } from '../../utils/path-utils';
 import type { StoreDevToolsAction } from '../../devtools/types';
 
 /**

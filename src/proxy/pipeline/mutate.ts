@@ -2,68 +2,11 @@ import type { JsonLike, PipelineStats } from '@adsq/jsnq/core/types';
 import { requireJsnqBridge } from '../../core/jsnq-contract';
 import { logger } from '../../utils/logger';
 import { readBranch, type StoreHost } from '../store-host';
-import { openPipeline } from './context';
-import type {
-  MutationResult,
-  Operator,
-  Pipeline,
-  PipelineCountResult,
-  PipelineExecutionResult,
-  PipelineMode,
-} from './types';
+import { openPipeline } from './query';
+import type { MutationResult, Operator, PipelineMode } from './types';
 
-interface Executed {
-  executable: Pipeline;
-  results: unknown[];
-  count: number;
-}
-
-/** Per mode: run the pipeline, then shape the response. Static, shared by every proxy node. */
-const MUTATING_MODES: Record<
-  PipelineMode,
-  { run(pipeline: Pipeline): Executed; shape(executed: Executed, stats: PipelineStats): MutationResult }
-> = {
-  all: {
-    run: (pipeline) => {
-      const results = pipeline.all();
-      return { executable: pipeline, results, count: results.length };
-    },
-    shape: toExecutionResult,
-  },
-  first: {
-    run: (pipeline) => {
-      const executable = pipeline.with({ options: { ...pipeline.options, earlyTermination: true } });
-      const results = executable.all();
-      return { executable, results, count: results.length };
-    },
-    shape: toExecutionResult,
-  },
-  count: {
-    run: (pipeline) => ({ executable: pipeline, results: [], count: pipeline.count() }),
-    shape: (executed, stats): PipelineCountResult => ({
-      value: executed.executable.data,
-      stats,
-      count: executed.count,
-    }),
-  },
-};
-
-function toExecutionResult(executed: Executed, stats: PipelineStats): PipelineExecutionResult {
-  return { value: executed.executable.data, stats, results: executed.results };
-}
-
-function mutationCount(stats: PipelineStats): number {
-  return (
-    stats.replaces +
-    stats.updates +
-    stats.mergeUpdates +
-    stats.deletedKeys +
-    stats.deletedElements +
-    stats.inserted +
-    stats.moved +
-    stats.copied
-  );
-}
+const mutationCount = (s: PipelineStats): number =>
+  s.replaces + s.updates + s.mergeUpdates + s.deletedKeys + s.deletedElements + s.inserted + s.moved + s.copied;
 
 /** Writes a mutated branch back: one setValue for a sub-path, a per-key diff for the root. */
 function commit(host: StoreHost, path: string, data: JsonLike): void {
@@ -97,11 +40,15 @@ export function executeMutating(
     logger.warn(`Cannot mutate undefined value at path: ${path || 'root'}`);
     return undefined;
   }
-  const strategy = MUTATING_MODES[mode];
-  const executed = strategy.run(openPipeline('mutate', host, current, operators, true));
-  const stats = executed.executable.getStats();
-  if (mutationCount(stats) > 0) commit(host, path, executed.executable.data);
-  return strategy.shape(executed, stats);
+  const pipeline = openPipeline('mutate', host, current, operators, true);
+  // `first` stops at the first match; `count` only counts.
+  const executable = mode === 'first' ? pipeline.with({ options: { ...pipeline.options, earlyTermination: true } }) : pipeline;
+  const results = mode === 'count' ? [] : executable.all();
+  const count = mode === 'count' ? pipeline.count() : results.length;
+  const stats = executable.getStats();
+  if (mutationCount(stats) > 0) commit(host, path, executable.data);
+  const value = executable.data;
+  return mode === 'count' ? { value, stats, count } : { value, stats, results };
 }
 
 const MISS = Symbol('no-fast-mutation');

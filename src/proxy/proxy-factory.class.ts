@@ -6,7 +6,7 @@ import { createWriteFns } from './store-writes';
 import type { StoreData } from '../types/advanced-types';
 import type { SignalStore } from '../core/signal-store.service';
 import type { CreateStoreService } from '../core/create-store.core';
-import { readPath } from '../utils/abstracts/path-reader';
+import { readPath } from '../utils/path-utils';
 
 /** Configuration of a `ProxyFactory` (one per named store). */
 export interface ProxyFactoryConfig {

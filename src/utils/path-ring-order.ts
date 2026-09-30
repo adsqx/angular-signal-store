@@ -46,7 +46,8 @@ export class PathRingOrder {
 
   some(predicate: Keep): boolean {
     for (let i = this.head; i < this.entries.length; i++) {
-      if (this.isLive(this.entries[i]) && predicate(this.entries[i].key)) return true;
+      const entry = this.entries[i];
+      if (this.liveTokens[entry.key] === entry.token && predicate(entry.key)) return true;
     }
     return false;
   }

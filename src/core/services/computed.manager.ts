@@ -2,10 +2,8 @@ import { computed, type Signal, type WritableSignal } from '@angular/core';
 import type { CreateStoreService } from '../create-store.core';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import type { ManagerCtx } from './manager-ctx';
-import { PathUtils } from '../../utils/path-utils';
-import { readBySegments, segmentsOf } from '../../utils/abstracts/path-reader';
-import { buildMethodHashSegment } from '../../utils/array-query-key.utils';
-import { executeArrayQuery, type ArrayQueryMethodWithLength } from '../../utils/array-query-executor';
+import { PathUtils, readBySegments, segmentsOf } from '../../utils/path-utils';
+import { buildMethodHashSegment, executeArrayQuery, type ArrayQueryMethodWithLength } from '../../utils/array-query';
 import type { StoreData } from '../../types/advanced-types';
 
 const cloneShallow = (value: unknown): unknown =>

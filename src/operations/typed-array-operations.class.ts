@@ -6,7 +6,7 @@ import type { SignalStore } from '../core/signal-store.service';
 import type { CreateStore } from '../core/create-store.class';
 import { PathUtils } from '../utils/path-utils';
 import { ArrayMutationOrchestrator } from './array-mutation-orchestrator';
-import { ArrayQueryMethodWithLength, asPredicate, executeArrayQuery } from '../utils/array-query-executor';
+import { ArrayQueryMethodWithLength, asPredicate, executeArrayQuery } from '../utils/array-query';
 
 export { ArrayChain } from './array-chain';
 

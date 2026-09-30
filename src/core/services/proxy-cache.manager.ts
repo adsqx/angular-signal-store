@@ -1,5 +1,4 @@
 import type { Signal } from '@angular/core';
-import { ManageFinalizationRegistry } from '../../utils/manage-finalization-registry';
 import { PathUtils } from '../../utils/path-utils';
 import type { ProxyCallable } from '../../interfaces/types';
 import type { SignalStore } from '../signal-store.service';
@@ -22,7 +21,8 @@ export class ProxyCacheManager {
   private readonly order = new PathRingOrder();
   private hits = 0;
   private misses = 0;
-  private readonly finalizer = new ManageFinalizationRegistry<ProxyCallable, string>((path) => this.delete(path));
+  /** Drops a path's entries once its proxy is collected (absent where FinalizationRegistry is unavailable). */
+  private readonly finalizer = typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry<string>((path) => this.delete(path)) : undefined;
 
   constructor(
     private readonly storeName: string,
@@ -42,7 +42,8 @@ export class ProxyCacheManager {
 
   add(path: string, proxy: ProxyCallable): void {
     const normalized = PathUtils.normalizePath(path);
-    this.cache[normalized] = this.finalizer.create(proxy, normalized);
+    this.finalizer?.register(proxy, normalized);
+    this.cache[normalized] = new WeakRef(proxy);
     this.order.add(normalized);
     this.order.evictOver(
       this.signalStore.getProxyCacheLimit(this.storeName) ?? 1000,

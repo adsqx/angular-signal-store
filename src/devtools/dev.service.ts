@@ -12,6 +12,8 @@ function act<K extends ActionType>(type: K, payload: PayloadOf<K>): StoreDevTool
   return { type, payload } as StoreDevToolsAction;
 }
 
+const arrays = (value: unknown) => (value as unknown[]) ?? [];
+
 @Injectable({
   providedIn: 'root'
 })
@@ -32,19 +34,13 @@ export class DevService implements AngularStoreDevtools {
   emitRead(event: DevToolsEvent) {
     this.readActionSubject.next(event);
   }
-  
+
   setValue(path: string, value: unknown, oldValue?: unknown) {
     this.actionSubject.next(act('SET_VALUE', { path, value, oldValue }));
   }
 
   setArrayOperation(path: string, method: string, args: unknown[], oldValue?: unknown, newValue?: unknown) {
-    this.actionSubject.next(act('ARRAY_OPERATION', {
-      path,
-      method,
-      args,
-      oldValue: (oldValue as unknown[]) ?? [],
-      newValue: (newValue as unknown[]) ?? []
-    }));
+    this.actionSubject.next(act('ARRAY_OPERATION', { path, method, args, oldValue: arrays(oldValue), newValue: arrays(newValue) }));
   }
 
   logUnsubscribe(path: string) {
@@ -56,15 +52,8 @@ export class DevService implements AngularStoreDevtools {
   }
 
   logProxyMetrics(metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) {
-    this.actionSubject.next(act('PROXY_METRICS', {
-      path: 'proxy-cache',
-      hits: metrics.hits,
-      misses: metrics.misses,
-      hitRate: metrics.hitRate,
-      cacheSize: metrics.cacheSize,
-      cacheDump: [],
-      cacheKeys: []
-    }));
+    const { hits, misses, hitRate, cacheSize } = metrics;
+    this.actionSubject.next(act('PROXY_METRICS', { path: 'proxy-cache', hits, misses, hitRate, cacheSize, cacheDump: [], cacheKeys: [] }));
   }
 
   computedStoreUpdate(storeName: string, operation: 'add' | 'remove' | 'update', key: string, keys: string[], snapshot?: Record<string, unknown>) {
@@ -76,28 +65,14 @@ export class DevService implements AngularStoreDevtools {
   }
 
   arrayOperation(storeName: string, path: string, method: string, args: unknown[], oldValue?: unknown, newValue?: unknown) {
-    this.actionSubject.next(act('ARRAY_OPERATION', {
-      storeName,
-      path,
-      method,
-      args,
-      oldValue: (oldValue as unknown[]) ?? [],
-      newValue: (newValue as unknown[]) ?? []
-    }));
+    this.actionSubject.next(act('ARRAY_OPERATION', { storeName, path, method, args, oldValue: arrays(oldValue), newValue: arrays(newValue) }));
   }
 
   arrayOperationUniversal(payload: { storeName?: string; method: string; path: string; oldValue?: unknown; newValue?: unknown; addedElements?: unknown[]; removedElements?: unknown[]; indexes?: number[]; args?: unknown[] }) {
     const { storeName, method, path, oldValue, newValue, addedElements, removedElements, indexes, args } = payload;
     this.actionSubject.next(act('ARRAY_OPERATION', {
-      storeName,
-      path,
-      method,
-      args: args ?? [],
-      oldValue: (oldValue as unknown[]) ?? [],
-      newValue: (newValue as unknown[]) ?? [],
-      added: addedElements,
-      removed: removedElements,
-      indexes
+      storeName, path, method, args: args ?? [], oldValue: arrays(oldValue), newValue: arrays(newValue),
+      added: addedElements, removed: removedElements, indexes
     }));
   }
 
@@ -111,15 +86,11 @@ export class DevService implements AngularStoreDevtools {
 
   createVisualizer() {
     if (typeof window === 'undefined') return;
-
-    // If the DevTools panel is already rendered in an Angular template
-    // (e.g. <app-dev-tools> added in app.html) we should not try to recreate
-    // it: removing it makes Angular destroy the component, and a dynamically
-    // added element would not be bootstrapped again.
+    // A panel already rendered in an Angular template (<app-dev-tools> in app.html) must stay: removing
+    // it destroys the component, and a dynamically added element would not be bootstrapped again.
     if (document.querySelector('app-dev-tools')) return;
-
-    // A standalone component in the root component's `imports` is bootstrapped
-    // automatically if its element exists before change detection runs.
+    // A standalone component in the root component's `imports` is bootstrapped automatically if its
+    // element exists before change detection runs.
     document.body.appendChild(document.createElement('app-dev-tools'));
   }
 
@@ -129,42 +100,24 @@ export class DevService implements AngularStoreDevtools {
 
   proxyMetrics(storeName: string, metrics: { hits: number; misses: number; hitRate: number; cacheSize: number; cacheDump?: Array<{ key: string; value: string }>; cacheKeys?: string[] }) {
     this.emitAction({
-      ...act('PROXY_METRICS', {
-        path: 'proxy-cache',
-        ...metrics,
-        cacheDump: metrics.cacheDump ?? [],
-        cacheKeys: metrics.cacheKeys ?? []
-      }),
+      ...act('PROXY_METRICS', { path: 'proxy-cache', ...metrics, cacheDump: metrics.cacheDump ?? [], cacheKeys: metrics.cacheKeys ?? [] }),
       storeName
     });
   }
 
   behaviorSubscriptionStats(storeName: string, stats: { totalNodes?: number; activeSubscriptions?: number; inactiveNodes?: number; subscriptionDetails?: Array<{ path: string; count: number; hasValue: boolean }> }) {
     this.emitAction({
-      ...act('BEHAVIOR_STORE_UPDATE', {
-        storeName,
-        action: 'update',
-        path: 'behavior-subscriptions',
-        keys: [],
-        ...stats,
-        graph: undefined
-      }),
+      ...act('BEHAVIOR_STORE_UPDATE', { storeName, action: 'update', path: 'behavior-subscriptions', keys: [], ...stats, graph: undefined }),
       storeName
     });
   }
 
   computedStoreUpdateWithSnapshot(storeName: string, operation: 'add' | 'remove' | 'update', path: string, keys: string[], snapshot?: Record<string, unknown>, graph?: unknown) {
-    this.emitActionAsync({
-      ...act('COMPUTED_STORE_UPDATE', { storeName, action: operation, path, keys, snapshot, graph }),
-      storeName
-    });
+    this.emitActionAsync({ ...act('COMPUTED_STORE_UPDATE', { storeName, action: operation, path, keys, snapshot, graph }), storeName });
   }
 
   behaviorStoreUpdateWithState(storeName: string, operation: 'add' | 'remove' | 'update', path: string, keys: string[], value?: unknown, currentState?: Record<string, BehaviorSubject<unknown>>, graph?: unknown) {
-    this.emitActionAsync({
-      ...act('BEHAVIOR_STORE_UPDATE', { storeName, action: operation, path, keys, value, currentState, graph }),
-      storeName
-    });
+    this.emitActionAsync({ ...act('BEHAVIOR_STORE_UPDATE', { storeName, action: operation, path, keys, value, currentState, graph }), storeName });
   }
 
   // Emit action in microtask (non-blocking)
@@ -172,14 +125,7 @@ export class DevService implements AngularStoreDevtools {
     queueMicrotask(() => this.emitAction(event));
   }
 
-  // ===== STATS METHODS (moved from CreateStoreService) =====
-  // These methods are only used by DevTools and should be in DevService
-
-  /**
-   * Get behavior subscription statistics for DevTools
-   * @param behaviorStore - BehaviorSubject store from CreateStoreService
-   * @param subscriptionCounts - Subscription count map from CreateStoreService
-   */
+  /** Behavior subscription statistics for DevTools. */
   getBehaviorSubscriptionStats(
     behaviorStore: Record<string, BehaviorSubject<unknown>>,
     subscriptionCounts: Record<string, number>
@@ -203,18 +149,10 @@ export class DevService implements AngularStoreDevtools {
     return { totalNodes: details.length, activeSubscriptions, inactiveNodes, subscriptionDetails: details };
   }
 
-  /**
-   * Get all behavior store keys for DevTools
-   * @param behaviorStore - BehaviorSubject store from CreateStoreService
-   */
   getBehaviorKeys(behaviorStore: Record<string, unknown>): string[] {
     return Object.keys(behaviorStore);
   }
 
-  /**
-   * Get all computed store keys for DevTools
-   * @param computedStore - Computed signal store from CreateStoreService
-   */
   getComputedKeys(computedStore: Record<string, unknown>): string[] {
     return Object.keys(computedStore);
   }

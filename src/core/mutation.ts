@@ -2,7 +2,8 @@ import type { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';
 import { getBySegmentsCore } from '../utils/path-core';
 import type { CreateStoreService } from './create-store.core';
-import { CursorManager } from './services/cursor.manager';
+import { FlatStoreMap } from '../utils/flat-store-map';
+import { JsonDataCursor, createJsonPathPlan, type JsonPathPlan } from '@adsq/jsnq/data-engine';
 import type { StoreDevtools } from './store-devtools';
 import { wakeOptions } from './wake/wake-types';
 
@@ -11,7 +12,8 @@ import { wakeOptions } from './wake/wake-types';
  * deferred cleanup of derived state. `setValueFast` and `setValueObserve` differ only in `observe`.
  */
 export class StoreMutator {
-  private cursorRef?: CursorManager;
+  /** Cached path plans and the cursor that applies them, created on the first write. */
+  private cursorState?: { plans: FlatStoreMap<JsonPathPlan>; cursor: JsonDataCursor };
 
   constructor(
     /** The store data, read live: the store may be reassigned. */
@@ -20,8 +22,8 @@ export class StoreMutator {
     private readonly devtools: StoreDevtools
   ) {}
 
-  private get cursor(): CursorManager {
-    return (this.cursorRef ??= new CursorManager());
+  private get cursors() {
+    return (this.cursorState ??= { plans: new FlatStoreMap<JsonPathPlan>(), cursor: new JsonDataCursor() });
   }
 
   /**
@@ -55,26 +57,28 @@ export class StoreMutator {
     service.cleanupComputedStore(normalized);
     service.cleanupVersionStore(normalized);
     service.clearProxyCacheForPath(normalized);
-    this.cursor.invalidateCache(normalized);
-    this.cursor.invalidateForDeletion(normalized);
+    this.cursors.plans.deleteByPrefix(normalized);
+    this.cursors.cursor.invalidateForDeletion(normalized);
   }
 
   prefetch(path: string, node: Record<string, unknown> | null): void {
     try {
-      this.cursor.prefetch(path, node);
+      this.cursors.cursor.prefetch(path, node);
     } catch (e) {
       console.warn('CreateStore prefetchCursor error:', e);
     }
   }
 
   destroy(): void {
-    this.cursorRef?.clearCaches();
+    this.cursorState?.plans.clear();
+    this.cursorState?.cursor.clear();
   }
 
   /** Cursor write at a normalized path; returns the previous value. */
   put(normalized: string, value: unknown): unknown {
-    const cursor = this.cursor;
-    return cursor.mutateNode(this.getStore() as Record<string, unknown>, cursor.applyPathPlan(normalized), normalized, value);
+    const { plans, cursor } = this.cursors;
+    const plan = plans.getOrCreate(normalized, createJsonPathPlan);
+    return cursor.writeWithPlan(this.getStore() as Record<string, unknown>, plan.path === normalized ? plan : createJsonPathPlan(normalized), value).previous;
   }
 
   /** Remove the key (or splice the index, for arrays) at `normalized`; a missing or primitive parent is a no-op. */
