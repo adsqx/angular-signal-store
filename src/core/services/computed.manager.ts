@@ -1,7 +1,8 @@
 import { computed, type Signal, type WritableSignal } from '@angular/core';
 import type { CreateStoreService } from '../create-store.core';
 import { FlatStoreMap } from '../../utils/flat-store-map';
-import { BaseManager } from './base.manager';
+import type { ManagerCtx } from './manager-ctx';
+import { PathUtils } from '../../utils/path-utils';
 import { buildMethodHashSegment } from '../../utils/array-query-key.utils';
 import { executeArrayQuery } from '../../utils/array-query-executor';
 import type {
@@ -33,14 +34,14 @@ export type ArrayQueryPredicate<E, M extends ArrayQueryMethod | 'length'> =
 
 /**
  * Manages computed signals graph for a single store instance.
- * Refactored with BaseManager and FlatStoreMap for optimal performance.
  */
-export class ComputedService<TStore extends StoreData = StoreData> extends BaseManager<TStore> {
-  private computedStore = new FlatStoreMap<Signal<unknown>>();
+export class ComputedService<TStore extends StoreData = StoreData> {
+  private readonly computedStore = new FlatStoreMap<Signal<unknown>>();
 
-  constructor(core: CreateStoreService<TStore>, storeName: string) {
-    super(core, storeName);
-  }
+  constructor(
+    private readonly core: CreateStoreService<TStore>,
+    private readonly ctx: ManagerCtx
+  ) {}
 
   // --- public API used by core ---
   get<T>(path: ValidPath<TStore> & string): Signal<T> | undefined {
@@ -51,10 +52,10 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
   }
 
   add(path: ValidPath<TStore> & string): void {
-    if (!super.pathHasValue(path)) return;
-    if (this.computedStore.has(path)) return;
+    const normalizedPath = PathUtils.normalizePath(path);
+    if (this.ctx.read(normalizedPath) === undefined) return;
+    if (this.computedStore.has(normalizedPath)) return;
 
-    const normalizedPath = this.normalizePath(path);
     const s = this.versionedComputed(normalizedPath, (value) =>
       this.core.getCloneComputedOutputs() ? cloneShallow(value) : value
     );
@@ -77,7 +78,7 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
         cachedVersionPath = versionPath;
       }
       versionRef();
-      return project(this.core.fastReadBySegments(this.storeRef, pathSegments));
+      return project(this.ctx.reader.readBySegments(this.ctx.root, pathSegments));
     });
   }
 
@@ -118,8 +119,8 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
     predicate: ArrayQueryPredicate<E, M>,
     ...args: unknown[]
   ): Signal<R> | undefined {
-    const normalizedPath = this.normalizePath(path);
-    if (!super.pathHasValue(normalizedPath)) return undefined;
+    const normalizedPath = PathUtils.normalizePath(path);
+    if (this.ctx.read(normalizedPath) === undefined) return undefined;
 
     const keySegment = buildMethodHashSegment(method, predicate, args);
     const fullPath = [...this.core.getPathSegments(normalizedPath), '$arrayQuery', keySegment].join('.');
@@ -138,25 +139,26 @@ export class ComputedService<TStore extends StoreData = StoreData> extends BaseM
     this.core.setSignalInProxyCache(fullPath, s);
     this.computedStore.set(fullPath, s);
 
-    this.emitDevTools({
-      type: 'COMPUTED_STORE_UPDATE',
-      payload: { storeName: this.storeName, action: 'add', path: fullPath, keys: this.keys() }
-    });
+    this.emitUpdate('add', fullPath);
 
     return s as Signal<R>;
   }
 
   registerPipelineComputed(path: string, signalRef: Signal<unknown>): void {
     if (!signalRef) return;
-    const normalizedPath = this.normalizePath(path);
+    const normalizedPath = PathUtils.normalizePath(path);
     const existed = this.computedStore.has(normalizedPath);
     this.computedStore.set(normalizedPath, signalRef);
     this.core.setSignalInProxyCache(normalizedPath, signalRef);
 
-    const operation: 'add' | 'update' = existed ? 'update' : 'add';
-    this.emitDevTools({
+    this.emitUpdate(existed ? 'update' : 'add', normalizedPath);
+  }
+
+  private emitUpdate(action: 'add' | 'update', path: string): void {
+    if (!this.ctx.devActive) return;
+    this.ctx.emit({
       type: 'COMPUTED_STORE_UPDATE',
-      payload: { storeName: this.storeName, action: operation, path: normalizedPath, keys: this.keys() }
+      payload: { storeName: this.ctx.storeName, action, path, keys: this.keys() }
     });
   }
 }

@@ -1,53 +1,11 @@
-import { BehaviorSubject, Observable, Subscription, type Observer } from 'rxjs';
-import type { CreateStoreService } from '../create-store.core';
-import { BaseManager } from './base.manager';
+import type { BehaviorSubject, Observable } from 'rxjs';
+import { TrackedBehaviorSubject } from './tracked-behavior-subject';
+import type { ManagerCtx } from './manager-ctx';
 import { FlatStoreMap } from '../../utils/flat-store-map';
 import { CleanupScheduler } from '../../utils/cleanup-scheduler';
 import { PathUtils } from '../../utils/path-utils';
-import { StoreData } from '../../types/advanced-types';
 
 const BEHAVIOR_CLEANUP_DELAY_MS = 50;
-
-type NextObserver<T> = Partial<Observer<T>> | ((value: T) => void) | null;
-
-class TrackedBehaviorSubject<T> extends BehaviorSubject<T> {
-  constructor(
-    initialValue: T,
-    private readonly onSubscribe: () => void,
-    private readonly onUnsubscribe: () => void
-  ) {
-    super(initialValue);
-  }
-
-  override subscribe(
-    observerOrNext?: NextObserver<T>,
-    error?: ((error: unknown) => void) | null,
-    complete?: (() => void) | null
-  ): Subscription {
-    this.onSubscribe();
-    let subscription: Subscription;
-    try {
-      // Runtime accepts the observer-object form too; rxjs only types it on the 1-arg overload.
-      subscription = super.subscribe(observerOrNext as (value: T) => void, error, complete);
-    } catch (error) {
-      this.onUnsubscribe();
-      throw error;
-    }
-
-    if (subscription.closed) {
-      this.onUnsubscribe();
-      return subscription;
-    }
-
-    let finalized = false;
-    subscription.add(() => {
-      if (finalized) return;
-      finalized = true;
-      this.onUnsubscribe();
-    });
-    return subscription;
-  }
-}
 
 interface BehaviorNode {
   subject: BehaviorSubject<unknown>;
@@ -74,13 +32,11 @@ function safeComplete(subject: BehaviorSubject<unknown>, context: string): void 
  * Manages BehaviorSubject cache for a single store instance with subscription tracking and cleanup.
  * One node per path holds the subject and its live subscriber count.
  */
-export class BehaviorService<TStore extends StoreData = StoreData> extends BaseManager<TStore> {
-  private nodes = new FlatStoreMap<BehaviorNode>();
-  private cleanupScheduler = new CleanupScheduler();
+export class BehaviorService {
+  private readonly nodes = new FlatStoreMap<BehaviorNode>();
+  private readonly cleanupScheduler = new CleanupScheduler();
 
-  constructor(core: CreateStoreService<TStore>, storeName: string) {
-    super(core, storeName);
-  }
+  constructor(private readonly ctx: ManagerCtx) {}
 
   private scheduleCleanup(path: string): void {
     this.cleanupScheduler.schedule(
@@ -97,12 +53,12 @@ export class BehaviorService<TStore extends StoreData = StoreData> extends BaseM
   }
 
   private emitSubscriptionStats(): void {
-    if (!this.devActive) return;
+    if (!this.ctx.devActive) return;
     const stats = this.getSubscriptionStats();
-    this.emitDevTools({
+    this.ctx.emit({
       type: 'BEHAVIOR_STORE_UPDATE',
       payload: {
-        storeName: this.storeName,
+        storeName: this.ctx.storeName,
         action: 'update',
         path: 'behavior-subscriptions',
         keys: [],
@@ -118,7 +74,7 @@ export class BehaviorService<TStore extends StoreData = StoreData> extends BaseM
       return;
     }
 
-    const normalized = this.normalizePath(pathPrefix);
+    const normalized = PathUtils.normalizePath(pathPrefix);
     const pref = normalized ? `${normalized}.` : '';
     for (const key of this.cleanupScheduler.keys()) {
       if (key === normalized || key.startsWith(pref)) {
@@ -129,11 +85,59 @@ export class BehaviorService<TStore extends StoreData = StoreData> extends BaseM
 
   // API
   add(path: string): void {
-    this.nodes.addIfMissing(path, (normalizedPath) => {
+    this.node(path);
+  }
+
+  getTrackedObservable(path: string): Observable<unknown> {
+    return this.get(path).asObservable();
+  }
+
+  get(path: string): BehaviorSubject<unknown> {
+    return this.node(path).subject;
+  }
+
+  // Return an existing BehaviorSubject without creating one (peek)
+  peek(path: string): BehaviorSubject<unknown> | undefined {
+    return this.nodes.get(path)?.subject;
+  }
+
+  hasNodes(): boolean {
+    return this.nodes.size > 0;
+  }
+
+  /**
+   * Push fresh values to the already-existing subjects on `ancestors` (self first, then parents).
+   * Self receives `newValue`; parents are re-read from the store.
+   */
+  updateAncestors(ancestors: readonly string[], newValue?: unknown): void {
+    for (let i = 0; i < ancestors.length; i++) {
+      const subject = this.peek(ancestors[i]);
+      if (!subject) continue;
+      safeNext(subject, i === 0 ? newValue : this.ctx.read(ancestors[i]));
+    }
+  }
+
+  /**
+   * Update all existing BehaviorSubjects under the given prefix (including the prefix unless `skipSelf`).
+   * This keeps nested subscriptions in sync after array reindexing or bulk updates.
+   */
+  updateByPrefix(prefix: string, skipSelf = false): void {
+    const keys = this.nodes.getByPrefix(prefix);
+    if (!keys.length) return;
+    const normalized = PathUtils.normalizePath(prefix);
+    for (const key of keys) {
+      if (skipSelf && key === normalized) continue;
+      const subject = this.peek(key);
+      if (subject) safeNext(subject, this.ctx.read(key));
+    }
+  }
+
+  private node(path: string): BehaviorNode {
+    return this.nodes.getOrCreate(path, (normalizedPath) => {
       const node: BehaviorNode = {
         count: 0,
         subject: new TrackedBehaviorSubject(
-          this.readStore(normalizedPath),
+          this.ctx.read(normalizedPath),
           () => {
             this.cleanupScheduler.cancel(normalizedPath);
             node.count++;
@@ -148,45 +152,6 @@ export class BehaviorService<TStore extends StoreData = StoreData> extends BaseM
       };
       return node;
     });
-  }
-
-  getTrackedObservable(path: string): Observable<unknown> {
-    return this.get(path).asObservable();
-  }
-
-  get(path: string): BehaviorSubject<unknown> {
-    this.add(path);
-    return this.nodes.get(path)!.subject;
-  }
-
-  // Zwróć istniejący BehaviorSubject bez tworzenia nowego (peek)
-  peek(path: string): BehaviorSubject<unknown> | undefined {
-    return this.nodes.get(path)?.subject;
-  }
-
-  // Zaktualizuj wszystkie istniejące BehaviorSubject-y na ścieżce i jej przodkach
-  updateBySegments(path: string, newValue?: unknown): void {
-    const paths = PathUtils.enumerateAncestors(path);
-    for (let i = 0; i < paths.length; i++) {
-      const subject = this.peek(paths[i]);
-      if (!subject) continue; // emituj wyłącznie dla już istniejących BS
-      safeNext(subject, i === 0 ? newValue : this.readStore(paths[i]));
-    }
-  }
-
-  /**
-   * Update all existing BehaviorSubjects under the given prefix (including the prefix).
-   * This keeps nested subscriptions in sync after array reindexing or bulk updates.
-   */
-  updateByPrefix(prefix: string, options: { skipSelf?: boolean } = {}): void {
-    const keys = this.nodes.getByPrefix(prefix);
-    if (!keys.length) return;
-    const normalized = this.normalizePath(prefix);
-    for (const key of keys) {
-      if (options.skipSelf && key === normalized) continue;
-      const subject = this.peek(key);
-      if (subject) safeNext(subject, this.readStore(key));
-    }
   }
 
   getSubscriptionStats(): {

@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable, Subscription, combineLatest } from 'rxjs';
+import { BehaviorSubject, Observable } from 'rxjs';
 import { Signal, WritableSignal, computed } from '@angular/core';
 import { PathUtils } from '../utils/path-utils';
 import type { ProxyCallable } from '../interfaces/types';
@@ -6,8 +6,7 @@ import { SignalStore } from './signal-store.service';
 import { ComputedService, type ArrayQueryPredicate } from './services/computed.manager';
 import { BehaviorService } from './services/behavior.manager';
 import { ProxyCacheManager, CacheMetrics } from './services/proxy-cache.manager';
-import { PathReader } from '../utils/abstracts/path-reader';
-import { VersionBumpScheduler } from '../utils/version-bump-scheduler';
+import { ManagerCtx } from './services/manager-ctx';
 import {
   StoreData,
   ValidPath,
@@ -21,15 +20,22 @@ import {
 } from '../types/advanced-types';
 import { VersionManager } from './services/version.manager';
 import { DependencyTracker } from './services/dependency-tracker';
-import { VersionBumpCoordinator } from './services/version-bump-coordinator';
-import { VersionBumpPolicy } from './services/version-bump-policy';
-import { ReactivityWakeupService, NO_WAKE_OPTIONS, type WakeUpPathOptions } from './services/reactivity-wakeup.service';
+import { WakeEngine } from './wake/wake-engine';
+import type { StoreWakeupMode, WakeUpPathOptions } from './wake/wake-types';
+import { selectObservable, warnOnWideDependencies } from './store-select';
 
-export type StoreWakeupMode = 'leaf' | 'grained' | 'granular' | 'exact' | 'graied' | 'graned';
+export type { StoreWakeupMode } from './wake/wake-types';
 
 export class CreateStoreService<TState extends StoreData = StoreData> {
   private readonly dependencyTracker = new DependencyTracker();
   private usingComputedStoreFallback = false;
+  private readonly ctx: ManagerCtx;
+  private readonly versions: VersionManager;
+  private readonly behaviors: BehaviorService;
+  private readonly wake: WakeEngine;
+  private _computedSvc?: ComputedService<TState>;
+  private cloneComputedOutputs = true;
+  private _storeProxy?: object;
 
   startCollect(): void { this.dependencyTracker.startCollect(); }
   stopCollect(): Set<string> | null { return this.dependencyTracker.stopCollect(); }
@@ -39,130 +45,70 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   getTrackReads(): boolean { return this.dependencyTracker.getTrackReads(); }
   isCollectingReads(): boolean { return this.dependencyTracker.isCollecting(); }
 
-  // Execute a projection within a read-tracking scope and return dependencies list
-  private trackProjection<TOut>(project: () => TOut): { value: TOut; deps: string[] } {
-    return this.dependencyTracker.trackProjection(project);
-  }
+  // ------------------
+  // Wake configuration (plain options read by the wake engine on every write)
+  // ------------------
+  setDependencyMode(mode: 'exact' | 'container') { this.wake.config.dependencyMode = mode; }
+  getDependencyMode(): 'exact' | 'container' { return this.wake.config.dependencyMode; }
+  setAutoBatchBumps(enabled: boolean): void { this.wake.config.autoBatch = !!enabled; }
+  getAutoBatchBumps(): boolean { return this.wake.config.autoBatch; }
+  setBumpNumericParent(enabled: boolean): void { this.wake.config.bumpNumericParent = !!enabled; }
+  getBumpNumericParent(): boolean { return this.wake.config.bumpNumericParent; }
+  setPartialInvalidation(enabled: boolean): void { this.wake.config.partial = !!enabled; }
+  setVersionBumpStrategy(strategy: 'microtask' | 'raf'): void { this.wake.scheduler.setStrategy(strategy); }
+  setVersionBumpThrottle(ms: number): void { this.wake.scheduler.setThrottle(ms); }
+  // Control BehaviorSubject update propagation on writes
+  setBehaviorUpdatesEnabled(enabled: boolean) { this.wake.config.behaviors = !!enabled; }
 
-  private readonly versionPolicy = new VersionBumpPolicy();
+  beginAction(): void { this.wake.scheduler.begin(); }
+  endAction(): void { this.wake.scheduler.end(); }
+  flushPendingBumps(): void { this.wake.scheduler.flushNow(); }
 
-  setDependencyMode(mode: 'exact' | 'container') { this.versionPolicy.setDependencyMode(mode); }
-  getDependencyMode(): 'exact' | 'container' { return this.versionPolicy.getDependencyMode(); }
-
-  // Dev-only helper to warn when dependency selection is too broad in 'container' mode
-  private warnOnWideDependencies(deps: string[]) {
-    if (this.versionPolicy.getDependencyMode() !== 'container') return;
-    // Heuristics: if many top-level deps or very short paths are tracked, warn in dev mode
-    const shortDeps = deps.filter((d) => d.split('.').length <= 1);
-    if (shortDeps.length > 0 && (globalThis as { ngDevMode?: boolean } | undefined)?.ngDevMode !== false) {
-      console.warn('[SignalStore] Container dependency mode: very broad dependencies detected:', shortDeps.slice(0, 5));
-    }
-  }
   resolveVersionPath(path: string): string {
-    return this.versionBumpCoordinator.resolvePath(path);
+    return this.wake.resolve(PathUtils.normalizePath(path));
   }
 
   resolveVersionPathNormalized(normalized: string): string {
-    return this.versionBumpCoordinator.resolveNormalizedPath(normalized);
+    return this.wake.resolve(normalized);
   }
-
-  private readonly pathReader = new PathReader();
-
-  private bumpScheduler = new VersionBumpScheduler((items) => {
-    for (const p of items) this.updateVersionIfExists(p);
-  });
-
-  private versionBumpCoordinator = new VersionBumpCoordinator(this.versionPolicy, this.bumpScheduler, {
-    hasNodes: () => this._versionSvc?.hasNodes() ?? false,
-    keys: () => this._versionSvc?.keys() ?? [],
-    updateIfExists: (path) => this.updateVersionIfExists(path)
-  });
-
-  // Aliases (incl. legacy misspellings) share one handler per canonical mode.
-  private readonly wakeupModeHandlers: Record<StoreWakeupMode, (normalized: string) => void> = (() => {
-    const leaf = (normalized: string) => this.versionBumpCoordinator.bumpLeafBranchNormalized(normalized);
-    const grained = (normalized: string) => this.versionBumpCoordinator.bumpExactNormalized(normalized);
-    // Null prototype: an inherited key such as 'constructor' must not resolve to a handler.
-    return Object.assign(Object.create(null), {
-      leaf, grained, granular: grained, exact: grained, graied: grained, graned: grained
-    });
-  })();
-
-  private reactivityWakeup = new ReactivityWakeupService({
-    behaviorUpdatesEnabled: () => this.behaviorUpdatesEnabled,
-    updateBehavior: (path, value) => this.updateBehaviorsBySegments(path, value),
-    ensureBehavior: (path) => this.behaviorSvc.add(path),
-    bumpVersionNormalized: (path) => this.bumpVersionsForNormalized(path),
-    bumpDescendantVersionsNormalized: (pathPrefix) => this.bumpDescendantVersionsForNormalized(pathPrefix),
-    clearProxyCache: (pathPrefix) => this.clearProxyCacheForPath(pathPrefix),
-    updateBehaviorByPrefix: (pathPrefix, options) => this.updateBehaviorByPrefix(pathPrefix, options)
-  });
-
-  beginAction(): void { this.bumpScheduler.begin(); }
-  endAction(): void { this.bumpScheduler.end(); }
-  flushPendingBumps(): void { this.bumpScheduler.flushNow(); }
-  setAutoBatchBumps(enabled: boolean): void { this.versionPolicy.setAutoBatchBumps(enabled); }
-  getAutoBatchBumps(): boolean { return this.versionPolicy.getAutoBatchBumps(); }
-  setBumpNumericParent(enabled: boolean): void { this.versionPolicy.setBumpNumericParent(enabled); }
-  getBumpNumericParent(): boolean { return this.versionPolicy.getBumpNumericParent(); }
-  setVersionBumpStrategy(strategy: 'microtask' | 'raf'): void { this.bumpScheduler.setStrategy(strategy); }
-  setVersionBumpThrottle(ms: number): void { this.bumpScheduler.setThrottle(ms); }
-  setPartialInvalidation(enabled: boolean): void { this.versionPolicy.setPartialInvalidation(enabled); }
 
   /** Delegated to PathReader (universal path traversal engine) */
   getPathSegments(path: string): readonly string[] {
-    return this.pathReader.getSegments(path);
+    return this.ctx.reader.getSegments(path);
   }
 
   /** Delegated to PathReader */
   fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
-    return this.pathReader.readBySegments(root as Record<string, unknown>, pathSegments);
+    return this.ctx.reader.readBySegments(root as Record<string, unknown>, pathSegments);
   }
 
-  // ------------------------------
-  // Flat string-keyed stores - per instance (no storeName needed)
-  // ------------------------------
-  private _versionSvc?: VersionManager;
-  private get versionSvc() {
-    if (!this._versionSvc) this._versionSvc = new VersionManager(this, this.storeName);
-    return this._versionSvc!;
-  }
-  private cloneComputedOutputs = true;
-  private behaviorUpdatesEnabled = true;
-  private _storeProxy?: object;
-  // Lazy services for modular logic
-  private _computedSvc?: ComputedService<TState>;
-  private _behaviorSvc?: BehaviorService<TState>;
   private get computedSvc(): ComputedService<TState> {
-    if (!this._computedSvc) this._computedSvc = new ComputedService<TState>(this, this.storeName);
-    return this._computedSvc;
+    return (this._computedSvc ??= new ComputedService<TState>(this, this.ctx));
   }
-  private get behaviorSvc(): BehaviorService<TState> {
-    if (!this._behaviorSvc) this._behaviorSvc = new BehaviorService<TState>(this, this.storeName);
-    return this._behaviorSvc;
-  }
-  // Public facade for behavior updates by segments
+
+  // ------------------
+  // Wake operations (delegated to the wake engine)
+  // ------------------
   updateBehaviorsBySegments(path: string, newValue?: unknown): void {
-    if (!this.behaviorUpdatesEnabled) return;
-    this._behaviorSvc?.updateBySegments(path, newValue);
+    this.wake.updateBehaviors(path, newValue);
   }
 
   wakeUpMutationPath(
     path: string,
     value: unknown,
-    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
+    options?: WakeUpPathOptions,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
-    return this.reactivityWakeup.wakeUpPath(path, value, options, behaviorUpdater);
+    return this.wake.wakePath(PathUtils.normalizePath(path), value, options, behaviorUpdater);
   }
 
   wakeUpMutationPathNormalized(
     normalized: string,
     value: unknown,
-    options: WakeUpPathOptions = NO_WAKE_OPTIONS,
+    options?: WakeUpPathOptions,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): boolean {
-    return this.reactivityWakeup.wakeUpPathNormalized(normalized, value, options, behaviorUpdater);
+    return this.wake.wakePath(normalized, value, options, behaviorUpdater);
   }
 
   wakeUpArrayMutation(
@@ -171,25 +117,21 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     afterVersion?: () => void,
     behaviorUpdater?: (path: string, value: unknown) => void
   ): void {
-    this.reactivityWakeup.wakeUpArrayPath(path, value, afterVersion, behaviorUpdater);
+    this.wake.wakeArray(PathUtils.normalizePath(path), value, afterVersion, behaviorUpdater);
   }
 
   wakeUpVersionPath(path: string, mode?: StoreWakeupMode): void {
-    if (!mode) {
-      this.reactivityWakeup.wakeUpVersionOnly(path);
-      return;
-    }
-    this.wakeUpVersionPathWithMode(path, mode);
+    if (mode) this.wakeUpVersionPathWithMode(path, mode);
+    else this.wake.bump(PathUtils.normalizePath(path));
   }
 
   wakeUpVersionPathWithMode(path: string, mode: StoreWakeupMode): void {
-    const normalized = PathUtils.normalizePath(path);
-    const handler = this.wakeupModeHandlers[mode];
-    if (!handler) throw new Error(`Unsupported wakeup mode: ${String(mode)}`);
-    handler(normalized);
+    this.wake.bumpByMode(mode, PathUtils.normalizePath(path));
   }
 
+  // ------------------
   // Type-safe selection API: select(fn) and computedOf(fn)
+  // ------------------
   private getStoreProxy(): TState {
     try {
       this._storeProxy ??= this.signalStore.useStore(this.storeName);
@@ -203,111 +145,44 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
 
   select<TOut>(project: (s: TState) => TOut): Observable<TOut> {
-    return new Observable<TOut>((subscriber) => {
-      const proxy = this.getStoreProxy();
-      let depSub: Subscription | null = null;
-      let depKey = '';
-      let hasValue = false;
-      let lastValue!: TOut;
-      let closed = false;
-      let computing = false;
-      let pending = false;
-
-      const toDepPaths = (deps: string[]): string[] => {
-        const tracked = deps.length === 0 && this.usingComputedStoreFallback
-          ? Object.keys(this.getComputedStore())
-          : deps;
-        return Array.from(new Set(tracked.map((dep) => this.resolveVersionPathNormalized(dep)))).sort();
-      };
-
-      const resubscribe = (depPaths: string[]) => {
-        const nextKey = depPaths.join('\0');
-        if (nextKey === depKey) return;
-
-        depSub?.unsubscribe();
-        depSub = null;
-        depKey = nextKey;
-
-        if (depPaths.length === 0) return;
-
-        let skipInitial = true;
-        depSub = combineLatest(depPaths.map((depPath) => this.getTrackedObservable(depPath))).subscribe({
-          next: () => {
-            if (skipInitial) {
-              skipInitial = false;
-              return;
-            }
-            recompute();
-          },
-          error: (error) => {
-            subscriber.error(error);
-          }
-        });
-      };
-
-      const recompute = () => {
-        if (closed) return;
-        if (computing) {
-          pending = true;
-          return;
-        }
-
-        computing = true;
-        try {
-          do {
-            pending = false;
-            const { value, deps } = this.trackProjection(() => project(proxy));
-            this.warnOnWideDependencies(deps);
-
-            if (!hasValue || !Object.is(value, lastValue)) {
-              lastValue = value;
-              hasValue = true;
-              subscriber.next(value);
-            }
-
-            resubscribe(toDepPaths(deps));
-          } while (pending && !closed);
-        } catch (error) {
-          closed = true;
-          depSub?.unsubscribe();
-          subscriber.error(error);
-        } finally {
-          computing = false;
-        }
-      };
-
-      recompute();
-
-      return () => {
-        closed = true;
-        depSub?.unsubscribe();
-        depSub = null;
-      };
-    });
+    return selectObservable<TState, TOut>(
+      {
+        proxy: () => this.getStoreProxy(),
+        usingFallback: () => this.usingComputedStoreFallback,
+        computedKeys: () => Object.keys(this.getComputedStore()),
+        trackProjection: (fn) => this.dependencyTracker.trackProjection(fn),
+        resolveVersionPath: (dep) => this.wake.resolve(dep),
+        observe: (versionPath) => this.getTrackedObservable(versionPath),
+        dependencyMode: () => this.wake.config.dependencyMode
+      },
+      project
+    );
   }
 
   computedOf<TOut>(project: (s: TState) => TOut) {
     const proxy = this.getStoreProxy();
     return computed(() => {
-      const { value, deps } = this.trackProjection(() => project(proxy));
-      this.warnOnWideDependencies(deps);
+      const { value, deps } = this.dependencyTracker.trackProjection(() => project(proxy));
+      warnOnWideDependencies(this.wake.config.dependencyMode, deps);
       return value;
     });
   }
 
   // Observable method cache, stored as flat map
   private observableMethodCache: Record<string, (...args: unknown[]) => unknown> = Object.create(null);
-  
+
   // Proxy cache orchestration
   private readonly proxyCacheManager: ProxyCacheManager;
-
-  // Array-query Computed values są teraz buforowane w samym grafie computedStore
 
   constructor(
     private storeName: string,
     public readonly signalStore: SignalStore
   ) {
     this.proxyCacheManager = new ProxyCacheManager(this.storeName, this.signalStore);
+    this.ctx = new ManagerCtx(storeName, signalStore);
+    this.versions = new VersionManager(this.ctx);
+    this.behaviors = new BehaviorService(this.ctx);
+    this.wake = new WakeEngine(this.versions, this.behaviors, this.proxyCacheManager);
   }
 
   // ------------------
@@ -322,9 +197,10 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
 
   hasIndexedDerivedNodeFrom(path: string, startIndex: number): boolean {
-    return this.hasIndexedPathFromKeys(this._behaviorSvc?.keys() ?? [], path, startIndex)
-      || this.hasIndexedPathFromKeys(this._computedSvc?.keys() ?? [], path, startIndex)
-      || this.hasIndexedPathFromKeys(this._versionSvc?.keys() ?? [], path, startIndex);
+    const hasIndexed = (keys: string[]) => keys.length > 0 && hasIndexedKeyFrom(keys, PathUtils.normalizePath(path), startIndex);
+    return hasIndexed(this.behaviors.keys())
+      || hasIndexed(this._computedSvc?.keys() ?? [])
+      || hasIndexed(this.versions.keys());
   }
 
   getProxyCacheMetrics(): CacheMetrics & { cacheSize: number; cacheKeys: string[] } {
@@ -372,9 +248,6 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
   setCloneComputedOutputs(enabled: boolean) { this.cloneComputedOutputs = !!enabled; }
   getCloneComputedOutputs(): boolean { return this.cloneComputedOutputs; }
-
-  // Control BehaviorSubject update propagation on writes
-  setBehaviorUpdatesEnabled(enabled: boolean) { this.behaviorUpdatesEnabled = !!enabled; }
 
   // ------------------
   // Observable cache helpers
@@ -447,30 +320,28 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
     path: string,
     pipeFn?: (obs: Observable<unknown>) => Observable<T>
   ): Observable<T> {
-    const observable = this.behaviorSvc.getTrackedObservable(path);
+    const observable = this.behaviors.getTrackedObservable(path);
     return pipeFn ? (pipeFn(observable) as Observable<T>) : (observable as Observable<T>);
   }
 
   getObservable(path: string): BehaviorSubject<unknown> {
-    return this.behaviorSvc.get(path);
+    return this.behaviors.get(path);
   }
 
   getTrackedObservable(path: string): Observable<unknown> {
-    return this.behaviorSvc.getTrackedObservable(path);
+    return this.behaviors.getTrackedObservable(path);
   }
 
   // Refresh existing BehaviorSubjects under a prefix (incl. nested paths)
   updateBehaviorByPrefix(pathPrefix: string, options?: { skipSelf?: boolean }): void {
-    if (!this.behaviorUpdatesEnabled) return;
-    if (!pathPrefix || typeof pathPrefix !== 'string') return;
-    this._behaviorSvc?.updateByPrefix(pathPrefix, options);
+    this.wake.updateBehaviorsByPrefix(pathPrefix, !!options?.skipSelf);
   }
 
   // ------------------
   // Helper methods for checking and managing stores
   // ------------------
   isBehaviorExists(path: string): boolean {
-    return this._behaviorSvc?.isExists(path) ?? false;
+    return this.behaviors.isExists(path);
   }
 
   isComputedExists(path: string): boolean {
@@ -481,7 +352,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   // Removed: getComputedKeys() - moved to DevService
 
   getBehaviorStore(): Record<string, BehaviorSubject<unknown>> {
-    return this._behaviorSvc?.store() ?? {};
+    return this.behaviors.store();
   }
 
   getComputedStore(): Record<string, Signal<unknown>> {
@@ -489,7 +360,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   }
 
   cleanupBehaviorStore(pathPrefix?: string): void {
-    this._behaviorSvc?.cleanup(pathPrefix);
+    this.behaviors.cleanup(pathPrefix);
   }
 
   cleanupComputedStore(pathPrefix?: string): void {
@@ -498,10 +369,10 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
 
   destroy(): void {
     this.stopCollect();
-    this._behaviorSvc?.destroy();
+    this.behaviors.destroy();
     this._computedSvc?.cleanup();
-    this._versionSvc?.cleanup();
-    this.versionBumpCoordinator.destroy();
+    this.versions.cleanup();
+    this.wake.destroy();
     this.proxyCacheManager.reset();
     this.observableMethodCache = Object.create(null);
     this._storeProxy = undefined;
@@ -512,43 +383,35 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   // Version operations
   // ------------------
   getVersion(path: string): WritableSignal<number> {
-    const v = this.versionSvc.get(path);
-    this.registerRead(PathUtils.normalizePath(path));
-    return v;
+    const normalized = PathUtils.normalizePath(path);
+    const version = this.versions.get(normalized);
+    this.dependencyTracker.registerReadNormalized(normalized);
+    return version;
   }
 
   bumpVersionsForNormalized(normalized: string): void {
-    this.versionBumpCoordinator.bumpPathNormalized(normalized);
+    this.wake.bump(normalized);
   }
 
   bumpDescendantVersionsForNormalized(normalizedPrefix: string): void {
-    this.versionBumpCoordinator.bumpDescendantsNormalized(normalizedPrefix);
+    this.wake.bumpDescendants(normalizedPrefix);
   }
 
   cleanupVersionStore(pathPrefix?: string): void {
-    this._versionSvc?.cleanup(pathPrefix);
+    this.versions.cleanup(pathPrefix);
   }
+}
 
-  // Removed: getBehaviorSubscriptionStats() - moved to DevService
-
-  // ------------------
-  // Helper methods
-  // ------------------
-   // Update existing version node without creating new ones; emit DevTools 'update'
-  private updateVersionIfExists(path: string): void { this._versionSvc?.updateIfExists(path); }
-
-  private hasIndexedPathFromKeys(keys: string[], path: string, startIndex: number): boolean {
-    if (!keys.length) return false;
-    const normalized = PathUtils.normalizePath(path);
-    const prefix = normalized ? `${normalized}.` : '';
-    if (!prefix) return false;
-    for (const key of keys) {
-      if (!key.startsWith(prefix)) continue;
-      const dotIndex = key.indexOf('.', prefix.length);
-      const segment = dotIndex === -1 ? key.slice(prefix.length) : key.slice(prefix.length, dotIndex);
-      const index = Number(segment);
-      if (Number.isInteger(index) && index >= startIndex) return true;
-    }
-    return false;
+/** True when some key under `normalized` continues with an integer segment >= `startIndex`. */
+function hasIndexedKeyFrom(keys: string[], normalized: string, startIndex: number): boolean {
+  if (!normalized) return false;
+  const prefix = `${normalized}.`;
+  for (const key of keys) {
+    if (!key.startsWith(prefix)) continue;
+    const dotIndex = key.indexOf('.', prefix.length);
+    const segment = dotIndex === -1 ? key.slice(prefix.length) : key.slice(prefix.length, dotIndex);
+    const index = Number(segment);
+    if (Number.isInteger(index) && index >= startIndex) return true;
   }
+  return false;
 }

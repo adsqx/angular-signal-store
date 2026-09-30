@@ -10,6 +10,7 @@ import { PathUtils } from '../utils/path-utils';
 import type { Stores } from '../types/registry';
 import type { StoreDevToolsAction } from '../devtools/types';
 import { setLoggerActive } from '../utils/logger';
+import { emitDevEvent } from './devtools-bus';
 import {
   SIGNAL_STORE_DEVTOOLS,
   type AngularStoreDevtools,
@@ -71,15 +72,7 @@ export class SignalStore {
   }
 
   emitDevAction(storeName: string, action: StoreDevToolsAction) {
-    if(this.devActive) {
-      const event: DevToolsEvent = { ...action, storeName };
-      queueMicrotask(() => this.devService?.emitAction(event));
-      // default also into read stream (history) unless proxy metrics (filtered below)
-      if (action.type !== 'PROXY_METRICS') {
-        this.devService?.emitRead(event);
-      }
-    }
-    return;
+    emitDevEvent(this, storeName, action, 'direct');
   }
   devActivation(devActive:boolean) {
     this.devActive = devActive;
@@ -106,24 +99,15 @@ export class SignalStore {
   private metricsThrottleMs = 250; // conservative default
 
   emitProxyMetrics(storeName: string, metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) {
-    // Proxy metrics now handled by CreateStoreService
     if (!this.devActive) return;
     const now = Date.now();
-    const last = this.lastMetricsEmit[storeName] || 0;
-    if (now - last < this.metricsThrottleMs) return;
+    if (now - (this.lastMetricsEmit[storeName] || 0) < this.metricsThrottleMs) return;
     this.lastMetricsEmit[storeName] = now;
-    const proxyAction: StoreDevToolsAction = {
+    // Action stream only: PROXY_METRICS never reaches the read history.
+    emitDevEvent(this, storeName, {
       type: 'PROXY_METRICS',
-      payload: {
-        path: 'proxy-cache',
-        ...metrics,
-        cacheDump: [],
-        cacheKeys: []
-      }
-    };
-    const event: DevToolsEvent = { ...proxyAction, storeName };
-    // send only to action stream, not to read history (user request)
-    queueMicrotask(() => this.devService?.emitAction(event));
+      payload: { path: 'proxy-cache', ...metrics, cacheDump: [], cacheKeys: [] }
+    }, 'direct');
   }
 
   createStore<T extends StoreData = StoreData>(
