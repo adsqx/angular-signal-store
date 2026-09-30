@@ -11,12 +11,7 @@ import { getBySegmentsCore } from '../utils/path-core';
 import type { Stores } from '../types/registry';
 import type { StoreDevToolsAction } from '../devtools/types';
 import { setLoggerActive } from '../utils/logger';
-import { emitDevEvent } from './devtools-bus';
-import {
-  SIGNAL_STORE_DEVTOOLS,
-  type AngularStoreDevtools,
-  type DevToolsEvent,
-} from './devtools-contract';
+import { SIGNAL_STORE_DEVTOOLS, emitDevEvent, type AngularStoreDevtools, type DevToolsEvent } from './devtools-contract';
 import { buildStore, type CreateStoreOptions } from './store-factory';
 import { StoreWaiters, type WaitForStoreOptions } from './store-waiters';
 import { wakeOptions } from './wake/wake-types';
@@ -30,13 +25,12 @@ export type { CreateStoreOptions } from './store-factory';
 })
 export class SignalStore {
   devActive:boolean = false;
-  // "Raw" CreateStore instances (full functionality)
+  /** Raw `CreateStore` instances (full functionality). */
   private storeInstances: Record<string, CreateStore<StoreData>> = Object.create(null);
-  // Ready-made proxied stores handed out to consumers
+  /** Proxied stores handed out to consumers. */
   private storeProxies: Record<string, StoreProxy<StoreData>> = Object.create(null);
-  // ProxyFactory references, to manage their metrics timers
+  /** Kept to manage their metrics timers. */
   private proxyFactories: Record<string, ProxyFactory> = Object.create(null);
-  // Proxy cache limit per store
   private proxyCacheLimits: Record<string, number> = Object.create(null);
   private readonly waiters = new StoreWaiters();
 
@@ -47,9 +41,6 @@ export class SignalStore {
     setLoggerActive(this.devActive);
   }
 
-  /* ----------------------------------------------------------------
-   * DevTools helpers – the central "bus" for the DevTools panel
-   * --------------------------------------------------------------*/
   public get devAction$() { return this.devService?.action$ ?? EMPTY; }
   public get devReadAction$() { return this.devService?.readAction$ ?? EMPTY; }
 
@@ -74,19 +65,16 @@ export class SignalStore {
     this.metricsThrottleMs = Math.max(0, ms);
   }
 
-  // Optional: bind an external observable<boolean> to drive dev activation
   bindDevActivation(devActive$: Observable<boolean>): Subscription {
     return devActive$.subscribe((active) => this.devActivation(!!active));
   }
-  // manual push to read stream if needed
   emitDevReadAction(storeName: string, data: StoreDevToolsAction) {
     const event: DevToolsEvent = { ...data, storeName };
     this.devService?.emitRead(event);
   }
 
-  // Throttle metrics emission per store
   private lastMetricsEmit: Record<string, number> = Object.create(null);
-  private metricsThrottleMs = 250; // conservative default
+  private metricsThrottleMs = 250;
 
   emitProxyMetrics(storeName: string, metrics: { hits: number; misses: number; hitRate: number; cacheSize: number }) {
     if (!this.devActive) return;
@@ -132,19 +120,14 @@ export class SignalStore {
     return existing ? Promise.resolve(existing as StoreProxy<T>) : this.waiters.wait<T>(name, options);
   }
 
-  /**
-   * The internal CreateStore instance behind the library's logic. Internal use only; components and
-   * services should use useStore().
-   */
+  /** The internal CreateStore instance behind a name. Internal use only; consumers should use useStore(). */
   getStore(name: string) {
     return this.storeInstances[name];
   }
 
   /**
-   * Register a store instance built directly via `new CreateStore(name)` so that
-   * `getStore(name)` (used by typed array operations, base manager, etc.) resolves it.
-   * Idempotent: the createStore factory assigns the same instance afterwards, and a
-   * second direct construction with the same name is left to the factory's own guard.
+   * Register a store instance built directly via `new CreateStore(name)` so `getStore(name)` resolves
+   * it. Idempotent: the createStore factory assigns the same instance afterwards.
    */
   registerStoreInstance(name: string, instance: CreateStore<StoreData>): void {
     if (name && !this.storeInstances[name]) {
@@ -170,7 +153,6 @@ export class SignalStore {
     this.destroyStore(name);
   }
 
-  // Overloads: typed by registry, and a fallback to keep compatibility when registry is empty
   useStore<K extends keyof Stores & string>(name: K): StoreProxy<Stores[K]>;
   useStore(name: string): StoreProxy<StoreData>;
   useStore(name: string): StoreProxy<StoreData> {
@@ -181,7 +163,6 @@ export class SignalStore {
     return proxy;
   }
 
-  // Public API compatibility method
   createCallableProxy(nestedPath: string, storeInstance: unknown, nestedValue: unknown) {
     return createCallableProxyUtil(nestedPath, storeInstance as IStoreInstance<StoreData>, nestedValue);
   }
@@ -216,13 +197,11 @@ export class SignalStore {
   /** Value at `path` in the named store's data. */
   read(storeName: string, path: string) {
     const store = this.getStore(storeName);
-    // Normalized twice on purpose: malformed bracket input is not a fixed point of normalization,
-    // and reads keep traversing the same segments as before (the second pass is one indexOf).
+    // Normalized twice on purpose: malformed bracket input is not a fixed point of normalization.
     const normalized = PathUtils.normalizePath(PathUtils.normalizePath(path));
     return getBySegmentsCore(store.returnStore(), PathUtils.splitNormalizedPath(normalized));
   }
 
-  // Legacy aliases of read()
   readStore(storeName: string, path: string) { return this.read(storeName, path); }
   getSignalValue(storeName: string, path: string) { return this.read(storeName, path); }
 
@@ -239,7 +218,6 @@ export class SignalStore {
     delete this.proxyCacheLimits[storeName];
   }
 
-  // Typed read via selector function with inference
   select<K extends keyof Stores & string, R>(storeName: K, selector: (state: Stores[K]) => R): R {
     return selector(this.getStore(storeName).returnStore() as Stores[K]);
   }

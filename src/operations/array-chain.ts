@@ -17,14 +17,14 @@ export class ArrayChain<T extends StoreData, P extends ValidPath<T> & string> {
   updateByFind(predicateOrValue: Match<ArrayElementType<T, P>>, newValue: ArrayElementType<T, P>): this { this.ops.updateArrayItemByFind<ArrayElementType<T, P>>(predicateOrValue, newValue); return this; }
   delete(predicateOrValue: Match<ArrayElementType<T, P>>): this { this.ops.deleteFromArray<ArrayElementType<T, P>>(predicateOrValue); return this; }
   deleteByIndex(index: number): this { this.ops.deleteByIndex(index); return this; }
-  find(predicateOrValue: Match<ArrayElementType<T, P>>): ArrayElementType<T, P> | undefined { return this.ops.findInArray<ArrayElementType<T, P>>(predicateOrValue); }
-  findIndex(predicateOrValue: Match<ArrayElementType<T, P>>): number { return this.ops.findIndexInArray<ArrayElementType<T, P>>(predicateOrValue); }
-  filter(predicate: PredicateFn<ArrayElementType<T, P>>): Array<ArrayElementType<T, P>> { return this.ops.filterArray<ArrayElementType<T, P>>(predicate); }
-  map<R>(mapFn: MapFn<ArrayElementType<T, P>, R>): R[] { return this.ops.mapArray<ArrayElementType<T, P>, R>(mapFn); }
-  reduce<R>(reduceFn: ReduceFn<ArrayElementType<T, P>, R>, initialValue: R): R { return this.ops.reduceArray<ArrayElementType<T, P>, R>(reduceFn, initialValue); }
-  some(predicate: PredicateFn<ArrayElementType<T, P>>): boolean { return this.ops.someArray<ArrayElementType<T, P>>(predicate); }
-  every(predicate: PredicateFn<ArrayElementType<T, P>>): boolean { return this.ops.everyArray<ArrayElementType<T, P>>(predicate); }
-  includes(value: ArrayElementType<T, P>): boolean { return this.ops.includesInArray<ArrayElementType<T, P>>(value); }
-  indexOf(value: ArrayElementType<T, P>): number { return this.ops.indexOfInArray<ArrayElementType<T, P>>(value); }
-  length(): number { return this.ops.lengthOfArray(); }
+  find(predicateOrValue: Match<ArrayElementType<T, P>>): ArrayElementType<T, P> | undefined { return this.ops.queryArray(predicateOrValue, 'find'); }
+  findIndex(predicateOrValue: Match<ArrayElementType<T, P>>): number { return this.ops.queryArray(predicateOrValue, 'findIndex'); }
+  filter(predicate: PredicateFn<ArrayElementType<T, P>>): Array<ArrayElementType<T, P>> { return this.ops.queryArray(predicate, 'filter'); }
+  map<R>(mapFn: MapFn<ArrayElementType<T, P>, R>): R[] { return this.ops.queryArray(mapFn, 'map'); }
+  reduce<R>(reduceFn: ReduceFn<ArrayElementType<T, P>, R>, initialValue: R): R { return this.ops.queryArray(reduceFn, 'reduce', initialValue); }
+  some(predicate: PredicateFn<ArrayElementType<T, P>>): boolean { return this.ops.queryArray(predicate, 'some'); }
+  every(predicate: PredicateFn<ArrayElementType<T, P>>): boolean { return this.ops.queryArray(predicate, 'every'); }
+  includes(value: ArrayElementType<T, P>): boolean { return this.ops.queryArray(value, 'includes'); }
+  indexOf(value: ArrayElementType<T, P>): number { return this.ops.queryArray(value, 'indexOf'); }
+  length(): number { return this.ops.queryArray(undefined, 'length'); }
 }

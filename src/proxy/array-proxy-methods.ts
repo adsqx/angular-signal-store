@@ -1,8 +1,18 @@
 import type { ArrayMutationMethod, ArrayQueryMethod } from '../types/advanced-types';
-import { isArrayPath } from '../types/type-guards';
-import { buildArrayQueryCacheKey } from '../utils/array-query-key.utils';
+import { PathUtils } from '../utils/path-utils';
+import { buildArrayQueryCacheKey } from '../utils/array-query';
 import type { ProxyNode } from './proxy-node';
 import type { StoreHost } from './store-host';
+
+/** True when `path` is well-formed and currently holds an array. */
+function isArrayPath(host: StoreHost, path: string): boolean {
+  if (!PathUtils.isValidPath(path)) return false;
+  try {
+    return Array.isArray(host.readStore(path));
+  } catch {
+    return false;
+  }
+}
 
 export type ArrayMemberKind = 'mutation' | 'query' | 'length';
 

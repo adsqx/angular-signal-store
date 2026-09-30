@@ -1,5 +1,6 @@
 /** Baseline for the path layer. Run: bun test/path-bench.ts */
 import { PathUtils } from '../src/utils/path-utils';
+import { parentPathOfCore, resolveVersionPathCore } from '../src/utils/path-core';
 
 const HOT = ['user.profile.name', 'board.rows.12.cells.3.value', 'a.b.c.d.e', 'items.0.tags.2'];
 const bench = (name: string, iterations: number, fn: (i: number) => void) => {
@@ -19,7 +20,7 @@ bench('normalizePath (unique, cache-hostile)', 200_000, (i) => { PathUtils.norma
 bench('splitNormalizedPath (hot)', 200_000, (i) => { PathUtils.splitNormalizedPath(HOT[i % HOT.length]!); });
 bench('splitNormalizedPath (unique)', 200_000, (i) => { PathUtils.splitNormalizedPath(`a.b${i}.c`); });
 bench('isValidPath (hot)', 200_000, (i) => { PathUtils.isValidPath(HOT[i % HOT.length]!); });
-bench('getParentPath (hot)', 200_000, (i) => { PathUtils.getParentPath(HOT[i % HOT.length]!); });
+bench('getParentPath (hot)', 200_000, (i) => { parentPathOfCore(HOT[i % HOT.length]!); });
 bench('resolveVersionPath (hot)', 200_000, (i) => {
-  PathUtils.resolveVersionPath(HOT[i % HOT.length]!, { mode: 'exact' } as never);
+  resolveVersionPathCore(HOT[i % HOT.length]!, { dependencyMode: 'exact', bumpNumericParent: true });
 });

@@ -5,16 +5,16 @@
  *
  * Run: bun test/path-core-jsnq-parity.test.ts
  */
+import { getBySegmentsCore } from '../src/utils/path-core';
 import {
   splitPathCore,
   getByPathCore,
   setByPathCore,
   pathExistsCore,
-  getBySegmentsCore,
   resolveParentAndKeyCore,
   getParentSegmentsCore,
   cloneJsonCore,
-} from '../src/utils/path-core';
+} from './path-core-reference';
 import {
   splitJsonPath,
   readJsonPath,

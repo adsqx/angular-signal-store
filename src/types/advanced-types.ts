@@ -1,10 +1,5 @@
-// src/app/store/types/advanced-types.ts
-
-// Advanced TypeScript types for type-safe store operations.
-// These types provide compile-time safety for path-based operations.
-
-// Helper types for path construction. Path unions must stay bounded for TS performance;
-// PathValue below resolves concrete string literals independently from this autocomplete depth.
+// Path-based types for type-safe store operations. Path unions must stay bounded for TS performance;
+// PathValue resolves concrete string literals independently from this autocomplete depth.
 type PrevDepth = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 type Prev<Depth extends number> = Depth extends keyof PrevDepth ? PrevDepth[Depth] : never;
 
@@ -24,14 +19,12 @@ type ObjectPathKeys<T, Depth extends number> = T extends Record<PropertyKey, unk
     }[keyof T]
   : never;
 
-// Enhanced deep object key paths with better type safety
 export type PathKeys<T, Depth extends number = 12> = [Depth] extends [never]
   ? never
   : Depth extends 0
   ? never
   : ArrayPathKeys<T, Depth> | ObjectPathKeys<T, Depth>;
 
-// Strict path type that enforces exact path matching
 export type StrictPath<T> = T extends Record<string, unknown>
   ? {
       [K in keyof T]: K extends string
@@ -46,7 +39,6 @@ export type StrictPath<T> = T extends Record<string, unknown>
     }[keyof T]
   : string;
 
-// Enhanced path value extraction with better type inference
 export type PathValue<T, P extends string> = P extends `${infer Key}.${infer Rest}`
   ? Key extends keyof NonNullable<T>
     ? PathValue<NonNullable<T>[Key], Rest>
@@ -63,18 +55,14 @@ export type PathValue<T, P extends string> = P extends `${infer Key}.${infer Res
         : unknown
       : unknown;
 
-// Safe path validation
 export type ValidPath<T> = PathKeys<T> | string;
 
-// Array operation types with strict typing
 export type ArrayElement<T> = T extends readonly (infer U)[] ? U : never;
 
-// Array method categories for better organization
 export type ArrayMutationMethod = 'push' | 'pop' | 'shift' | 'unshift' | 'splice' | 'reverse' | 'sort';
 export type ArrayQueryMethod = 'find' | 'findIndex' | 'filter' | 'map' | 'reduce' | 'some' | 'every' | 'includes' | 'indexOf';
 export type ArrayMethod = ArrayMutationMethod | ArrayQueryMethod;
 
-// Helper types for array operation results
 type QueryMethodResult<T, M extends ArrayQueryMethod> = M extends 'find' ? T | undefined
   : M extends 'findIndex' | 'indexOf' ? number
   : M extends 'filter' | 'map' ? T[]
@@ -88,12 +76,10 @@ type MutationMethodResult<T, M extends ArrayMutationMethod> = M extends 'push' |
   : M extends 'reverse' | 'sort' ? T[]
   : never;
 
-// Predicate function types
 export type PredicateFn<T> = (item: T, index: number, array: T[]) => boolean;
 export type MapFn<T, R> = (item: T, index: number, array: T[]) => R;
 export type ReduceFn<T, R> = (accumulator: R, currentValue: T, currentIndex: number, array: T[]) => R;
 
-// Enhanced array operation interfaces
 export interface ArrayOperationResult<T, M extends ArrayMethod> {
   method: M;
   success: boolean;
@@ -104,25 +90,21 @@ export interface ArrayOperationResult<T, M extends ArrayMethod> {
       : unknown;
 }
 
-// Splice operation specific types
 export interface SpliceOperation {
   start: number;
   deleteCount?: number;
   items: unknown[];
 }
 
-// Observable and Signal types (re-export for convenience)
+// Observable and Signal types (re-exported for convenience)
 export type ObservableType<T> = import('rxjs').Observable<T>;
 export type SignalType<T> = import('@angular/core').Signal<T>;
 export type BehaviorSubjectType<T> = import('rxjs').BehaviorSubject<T>;
 
-// Store instance constraint
 export type StoreData = Record<string, unknown>;
 
-// Helper type for function detection
 type IsFunction<T> = T extends (...args: unknown[]) => unknown ? true : false;
 
-// Type for callable proxy
 export type CallableProxy<T> = T & {
   (): T;
 } & {
