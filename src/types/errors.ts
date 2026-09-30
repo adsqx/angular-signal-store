@@ -54,19 +54,3 @@ export const StoreErrorFactory = {
   arrayOperation: (path: string, operation: string, reason: string, originalError?: Error) =>
     new ArrayOperationError(path, operation, reason, originalError),
 };
-
-/** Error result wrapper for operations that can fail. */
-export type OperationResult<T, E = BaseStoreError> =
-  | { success: true; data: T; error: null }
-  | { success: false; data: null; error: E };
-
-export function safeOperation<T>(
-  operation: () => T,
-  errorFactory: (error: Error) => BaseStoreError
-): OperationResult<T> {
-  try {
-    return { success: true, data: operation(), error: null };
-  } catch (error) {
-    return { success: false, data: null, error: errorFactory(error instanceof Error ? error : new Error(String(error))) };
-  }
-}

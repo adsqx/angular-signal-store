@@ -1,5 +1,3 @@
-// src/app/store/interfaces/store-instance.interface.ts
-
 import {
   StoreData,
   PathValue,
@@ -19,8 +17,30 @@ import {
 import type { StoreWakeupMode } from '../core/create-store.core';
 
 /**
+ * Element type of the array at `P`. Deliberately not `ArrayElement<PathValue<T, P>>`:
+ * that one is distributive, this one is not (`string[] | undefined` yields `never`).
+ */
+type ElementOf<T, P extends string> = PathValue<T, P> extends readonly (infer V)[] ? V : never;
+
+// Argument shapes that collapse to `unknown` when the element type is `never` (non-array
+// path). Each alias repeats the conditional so it stays distributive over `U` exactly like
+// the inline form did; do not factor the branch out into a second parameter.
+type ElemArg<U> = U extends never ? unknown : U;
+type PredicateArg<U> = U extends never ? unknown : PredicateFn<U>;
+type PredicateOrElem<U> = U extends never ? unknown : PredicateFn<U> | U;
+type MapArg<U, R> = U extends never ? unknown : MapFn<U, R>;
+type ReduceArg<U, R> = U extends never ? unknown : ReduceFn<U, R>;
+// The `any` in the callback unions is load-bearing: with `unknown` the generic fallback
+// stops accepting typed MapFn/ReduceFn callbacks.
+type QueryArg<U> = U extends never ? unknown : PredicateFn<U> | MapFn<U, any> | ReduceFn<U, any> | U;
+
+/**
  * Enhanced interface for a generic reactive store instance.
  * Provides type-safe methods for value and array manipulation, observability, and cleanup.
+ *
+ * Path-taking methods are overloaded three ways, in this order: a strict `PathKeys<T>`
+ * overload, a `string` literal fallback that keeps deep paths typed once the `PathKeys`
+ * depth is exceeded, and a plain dynamic `string` fallback returning `unknown`.
  */
 export interface IStoreInstance<T extends StoreData = StoreData> {
   /**
@@ -31,11 +51,8 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   /**
    * Returns a type-safe observable for a given path.
    */
-  // Strict path overload
   getObservable<P extends PathKeys<T>>(path: P): ObservableType<PathValue<T, P>>;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   getObservable<P extends string>(path: P): ObservableType<PathValue<T, P>>;
-  // Dynamic string fallback
   getObservable(path: string): ObservableType<unknown>;
 
   /**
@@ -47,11 +64,8 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   /**
    * Sets a value at the given path with type safety.
    */
-  // Strict path overload
   setValue<P extends PathKeys<T>>(path: P, value: PathValue<T, P>): void;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   setValue<P extends string>(path: P, value: PathValue<T, P>): void;
-  // Dynamic string fallback
   setValue(path: string, value: unknown): void;
 
   /**
@@ -76,7 +90,7 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    * Performs a type-safe array mutation method at the given path.
    */
   // Strict path overloads
-  setArrayMethod<P extends PathKeys<T>, U = PathValue<T, P> extends readonly (infer V)[] ? V : never>(
+  setArrayMethod<P extends PathKeys<T>, U = ElementOf<T, P>>(
     path: P,
     val: U,
     method: Extract<ArrayMutationMethod, 'push' | 'unshift'>,
@@ -91,7 +105,7 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
     val: SpliceOperation,
     method: 'splice'
   ): unknown;
-  setArrayMethod<P extends PathKeys<T>, U = PathValue<T, P> extends readonly (infer V)[] ? V : never>(
+  setArrayMethod<P extends PathKeys<T>, U = ElementOf<T, P>>(
     path: P,
     compareFn: (a: U, b: U) => number,
     method: 'sort'
@@ -99,7 +113,7 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   // Generic fallback (preserves existing API)
   setArrayMethod<P extends ValidPath<T>>(
     path: P,
-    val: PathValue<T, P> extends readonly (infer U)[] ? U : never,
+    val: ElementOf<T, P>,
     method: ArrayMutationMethod,
     ...args: unknown[]
   ): unknown;
@@ -128,47 +142,47 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   // Strict path overloads
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: PredicateFn<U> | U, method: 'find'): U | undefined;
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: PredicateFn<U> | U, method: 'findIndex'): number;
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: PredicateFn<U>, method: 'filter'): U[];
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never,
+    U = ElementOf<T, P>,
     R = unknown
   >(path: P, val: MapFn<U, R>, method: 'map'): R[];
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never,
+    U = ElementOf<T, P>,
     R = unknown
   >(path: P, val: ReduceFn<U, R>, method: 'reduce', initialValue: R): R;
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: PredicateFn<U>, method: 'some' | 'every'): boolean;
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: U, method: 'includes'): boolean;
   queryArray<
     P extends PathKeys<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(path: P, val: U, method: 'indexOf'): number;
   queryArray<P extends PathKeys<T>>(path: P, _: unknown, method: 'length'): number;
   // Generic fallback (preserves existing API)
   queryArray<
     P extends ValidPath<T>,
     M extends ArrayQueryMethod,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    val: U extends never ? unknown : PredicateFn<U> | MapFn<U, any> | ReduceFn<U, any> | U,
+    val: QueryArg<U>,
     method: M,
     ...args: unknown[]
   ): ArrayOperationResult<U, M>['result'];
@@ -183,31 +197,22 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   /**
    * Reads the value at the given path with proper return typing.
    */
-  // Strict path overload
   readStore<P extends PathKeys<T>>(path: P): PathValue<T, P> | undefined;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   readStore<P extends string>(path: P): PathValue<T, P> | undefined;
-  // Dynamic string fallback
   readStore(path: string): unknown | undefined;
 
   /**
    * Sets a value and notifies observers (internal use) with type safety.
    */
-  // Strict path overload
   setValueObserve<P extends PathKeys<T>>(path: P, value: PathValue<T, P>): void;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   setValueObserve<P extends string>(path: P, value: PathValue<T, P>): void;
-  // Dynamic string fallback
   setValueObserve(path: string, value: unknown): void;
 
   /**
    * Deletes a value at the given path with type safety.
    */
-  // Strict path overload
   deleteValue<P extends PathKeys<T>>(path: P): void;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   deleteValue<P extends string>(path: P): void;
-  // Dynamic string fallback
   deleteValue(path: string): void;
 
   /**
@@ -249,10 +254,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   findInArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U> | U
+    predicate: PredicateOrElem<U>
   ): U | undefined;
 
   /**
@@ -260,10 +265,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   findIndexInArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U> | U
+    predicate: PredicateOrElem<U>
   ): number;
 
   /**
@@ -271,10 +276,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   filterArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U>
+    predicate: PredicateArg<U>
   ): U[];
 
   /**
@@ -282,11 +287,11 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   mapArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never,
+    U = ElementOf<T, P>,
     R = unknown
   >(
     path: P,
-    callback: U extends never ? unknown : MapFn<U, R>
+    callback: MapArg<U, R>
   ): R[];
 
   /**
@@ -294,11 +299,11 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   reduceArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never,
+    U = ElementOf<T, P>,
     R = unknown
   >(
     path: P,
-    callback: U extends never ? unknown : ReduceFn<U, R>,
+    callback: ReduceArg<U, R>,
     initialValue?: R
   ): R;
 
@@ -307,10 +312,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   someArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U>
+    predicate: PredicateArg<U>
   ): boolean;
 
   /**
@@ -318,10 +323,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   everyArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U>
+    predicate: PredicateArg<U>
   ): boolean;
 
   /**
@@ -329,10 +334,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   includesInArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    searchElement: U extends never ? unknown : U
+    searchElement: ElemArg<U>
   ): boolean;
 
   /**
@@ -340,10 +345,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   indexOfInArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    searchElement: U extends never ? unknown : U
+    searchElement: ElemArg<U>
   ): number;
 
   /**
@@ -356,11 +361,11 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   updateArrayItem<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
     index: number,
-    newValue: U extends never ? unknown : U
+    newValue: ElemArg<U>
   ): void;
 
   /**
@@ -368,11 +373,11 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   updateArrayItemByFind<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U> | U,
-    newValue: U extends never ? unknown : U
+    predicate: PredicateOrElem<U>,
+    newValue: ElemArg<U>
   ): void;
 
   /**
@@ -380,10 +385,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
    */
   deleteFromArray<
     P extends ValidPath<T>,
-    U = PathValue<T, P> extends readonly (infer V)[] ? V : never
+    U = ElementOf<T, P>
   >(
     path: P,
-    predicate: U extends never ? unknown : PredicateFn<U> | U
+    predicate: PredicateOrElem<U>
   ): void;
 
   /**
@@ -394,31 +399,22 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   /**
    * Gets a computed signal for a path.
    */
-  // Strict path overload
   getComputed<P extends PathKeys<T>>(path: P): SignalType<PathValue<T, P>>;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   getComputed<P extends string>(path: P): SignalType<PathValue<T, P>>;
-  // Dynamic string fallback
   getComputed(path: string): SignalType<unknown>;
 
   /**
    * Gets a BehaviorSubject for a path.
    */
-  // Strict path overload
   getBehaviorSubject<P extends PathKeys<T>>(path: P): BehaviorSubjectType<PathValue<T, P>>;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   getBehaviorSubject<P extends string>(path: P): BehaviorSubjectType<PathValue<T, P>>;
-  // Dynamic string fallback
   getBehaviorSubject(path: string): BehaviorSubjectType<unknown>;
 
   /**
    * Gets signal value for a path.
    */
-  // Strict path overload
   getSignalValue<P extends PathKeys<T>>(path: P): PathValue<T, P> | undefined;
-  // Literal-string fallback keeps deep paths typed when PathKeys depth is exceeded
   getSignalValue<P extends string>(path: P): PathValue<T, P> | undefined;
-  // Dynamic string fallback
   getSignalValue(path: string): unknown | undefined;
 
   /**
