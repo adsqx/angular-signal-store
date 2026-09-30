@@ -82,8 +82,8 @@ export class CreateStore<T extends StoreData = StoreData> {
         storeName: this.storeName,
         ...payload,
         graph: undefined
-      } as any
-    });
+      }
+    } as StoreDevToolsAction);
   }
 
   private snapshotForDevtools(value: unknown): unknown {
