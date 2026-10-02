@@ -89,8 +89,8 @@ export class AppStore {
     history: [],
   }, 'app');
 
-  /** The same proxy typed as plain state, so that assignments compile (see TypeScript notes). */
-  readonly draft = this.store as unknown as AppState;
+  /** The store as plain, typed JSON: assignments compile and go through the store. */
+  readonly draft = this.store.$draft;
 }
 ```
 
@@ -545,23 +545,26 @@ a few proxy-only behaviours. Know these edges:
 **Reads are typed.** `store.user.name()` is `string`, `store.services()` is the element array,
 `store.services.length` is `number`, and `@for` items are typed.
 
-**Assignment needs a write view.** A leaf's declared type is callable (`string & (() => string)`),
-so `store.user.name = 'Ada'` does not compile under `strict`. Use a plain-state view of the same
-proxy for assignments:
+**Write like plain JSON with `$draft`.** A leaf's declared type is callable
+(`string & (() => string)`), so `store.user.name = 'Ada'` does not compile under `strict`.
+`store.$draft` is the same store typed as plain, deep-mutable data (`Draft<AppState>`):
 
 <!-- check: prelude=store-bare -->
 ```ts
-const draft = store as unknown as AppState;
+const draft = store.$draft;
 
 draft.user.name = 'Ada';
 draft.user.tags.push('maintainer');
-draft.dashboard.tiles = store.dashboard.tiles() + 1;
+draft.dashboard.tiles = draft.dashboard.tiles + 1;
+draft.services.find((s) => s.name === 'api')!.rps = 90; // elements are drafts too
 ```
 
-The write view is a cast over the same runtime object, so the compiler checks the assigned
-values against `AppState`. Use it on the left-hand side only: reading a leaf through `draft`
-gives you a proxy that TypeScript believes is a `string`. `store.setValue('user.name', 'Ada')`
-also writes, but it is not type-safe: a fallback overload accepts any path and any value.
+Every write through `$draft` takes the store's normal write path (same precise wakes, same
+devtools events), and array mutators call the store's array methods. Reads through `$draft`
+return the current plain values **without** subscribing anything: use `store.x()` for reactive
+reads in templates and computeds, `$draft` for typed writes and imperative reads.
+`CreateStore#draft` is the same view. `store.setValue('user.name', 'Ada')` also writes, but it is
+not type-safe: a fallback overload accepts any path and any value.
 
 **Reads infer from literal paths.** `store.getComputed('dashboard.tiles')` is `Signal<number>` and
 `store.readStore('user.name')` is `string | undefined`. Path arguments are autocompleted from
@@ -629,7 +632,7 @@ they return. "Root proxy" means the value returned by `createStore` / `useStore`
 
 | Entry | Exports |
 | --- | --- |
-| `@adsq/angular-signal-store` | `SignalStore` (also the default export), `CreateStore`, `SIGNAL_STORE_DEVTOOLS`, types `StoreProxy`, `WaitForStoreOptions`, `AngularStoreDevtools`, `DevToolsEvent`, and the `Signal` type re-exported from Angular. |
+| `@adsq/angular-signal-store` | `SignalStore` (also the default export), `CreateStore`, `SIGNAL_STORE_DEVTOOLS`, types `StoreProxy`, `Draft`, `WaitForStoreOptions`, `AngularStoreDevtools`, `DevToolsEvent`, and the `Signal` type re-exported from Angular. |
 | `@adsq/angular-signal-store/jsnq` | Side effect: registers the query engine. Also exports `angularJsnqBridge` (the registered bridge object). |
 | `@adsq/angular-signal-store/devtools` | `provideSignalStoreDevtools()`, `DevService`, types `AngularStoreDevtools`, `DevToolsEvent`. |
 
@@ -683,7 +686,8 @@ methods plus `array()`, `destroy()` and tuning setters.
 | Reactive | `getComputed(path)` | `Signal` for the path. |
 | | `getObservable(path)`, `getBehaviorSubject(path)` | RxJS view of the path. |
 | | `select(project)`, `computedOf(project)` | Observable / Signal projection with dependency tracking. |
-| Write | `setValue(path, value)`, `setValueObserve(path, value)` | Write a path. Throws on an invalid path. |
+| Write | `draft` | Same view as `store.$draft`: plain, typed JSON whose writes go through the store. |
+| | `setValue(path, value)`, `setValueObserve(path, value)` | Write a path. Throws on an invalid path. |
 | | `deleteValue(path)` | Remove a key. |
 | | `batch(fn)` | Group writes; returns `fn`'s result. |
 | | `wakeUp(path, mode?)`, `wakeup` | Manual invalidation. Modes `leaf` (default), `grained`. |
@@ -713,7 +717,8 @@ Available on every nested proxy (`store.a.b`):
 | `push`, `pop`, `shift`, `unshift`, `splice`, `sort`, `reverse` | Array mutators. |
 | `find`, `findIndex`, `filter`, `map`, `some`, `every`, `includes`, `indexOf`, `reduce` | Array queries; return memoised signals. |
 | `node[0]`, `node.child` | Child proxy (or `undefined` if the path does not exist). |
-| `$val`, `$signal` | Current value / path signal (typed on top-level fields only). |
+| `$val`, `$signal` | Current value (untracked) / path signal, on every node. |
+| `store.$draft` | The whole store as plain, typed JSON (`Draft<T>`): typed writes through the store, untracked reads. |
 | `mutate`, `$mutate` | JSNQ mutation (needs `/jsnq`). |
 | `$query`, `$queryOne`, `$liveQuery`, `$liveQueryOne` | JSNQ reads (need `/jsnq`). |
 | `query`, `pipeline` | JSNQ builders returning signals of result nodes (need `/jsnq`). |

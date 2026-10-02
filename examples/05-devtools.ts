@@ -25,7 +25,7 @@ devtools.action$.subscribe((event) => {
 
 type State = { user: { name: string }; list: number[] };
 const store = signalStore.createStore<State>({ user: { name: 'Ann' }, list: [1] }, 'demo');
-const draft = store as unknown as State;
+const draft = store.$draft;
 
 draft.user.name = 'quiet';
 await Promise.resolve();

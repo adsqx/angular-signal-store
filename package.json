@@ -45,6 +45,8 @@
     "test:smoke": "bun test/smoke.ts",
     "test:regressions": "bun test/regressions.test.ts",
     "test:types": "tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck --experimentalDecorators test/types-proxy-contract.ts",
+    "test:draft": "bun test/draft.test.ts",
+    "test:draft-types": "tsc -p test/tsconfig.draft-types.json",
     "bench:store": "bun test/store-throughput-bench.ts",
     "verify:exports": "node scripts/verify-exports.mjs",
     "test:jsnq-optional": "bun test/jsnq-optional.test.ts",

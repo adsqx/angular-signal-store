@@ -20,7 +20,7 @@ const store = signalStore.createStore<AppState>({
   ],
   history: [],
 }, 'arrays');
-const draft = store as unknown as AppState; // typed view for assignments only
+const draft = store.$draft; // typed, plain-JSON write view
 
 section('mutators return what the native method returns');
 check('push returns the new length', draft.history.push(1, 2, 3), 3);
@@ -49,7 +49,7 @@ draft.services[0].rps = 500; // write one item leaf: db -> 500
 check('re-derives when an element changes', busy().map((s) => s.name), ['db', 'cache']);
 
 section('the proxy query methods return signals at runtime');
-const filtered = store.services.filter((s) => s.rps > 400) as unknown as Signal<Service[]>;
+const filtered: Signal<Service[]> = store.services.filter((s) => s.rps > 400);
 check('call the result to read it', filtered().map((s) => s.name), ['db']);
 
 section('typed path helpers (read once, non-reactive)');

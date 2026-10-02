@@ -64,6 +64,8 @@ bun test/smoke.ts         # npm run test:smoke
 bun test/jsnq-optional.test.ts   # npm run test:jsnq-optional
 bun test/regressions.test.ts     # npm run test:regressions — one section per fixed bug
 npm run test:types               # proxy types match what the proxy returns at runtime
+bun test/draft.test.ts           # npm run test:draft — the $draft write view
+npm run test:draft-types
 npm run examples          # every file in examples/ must run green
 npm run build             # ng-packagr
 npm pack --dry-run        # the tarball must contain only the `files` whitelist

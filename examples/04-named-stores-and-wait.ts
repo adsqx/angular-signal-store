@@ -44,7 +44,7 @@ const seen: string[] = [];
 const subscription = typed.getObservable('title').subscribe((title) => seen.push(title));
 const label: string[] = [];
 const labelSub = typed.select(() => `${typed.title()} (${typed.tiles()})`).subscribe((v) => label.push(v));
-const draft = typed as unknown as Dashboard; // typed view for assignments
+const draft = typed.$draft; // typed, plain-JSON write view
 draft.title = 'Ops v2';
 draft.tiles = 13;
 check('getObservable emits the current value first, then changes', seen, ['Ops', 'Ops v2']);

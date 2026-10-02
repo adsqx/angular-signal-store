@@ -70,8 +70,8 @@ export class AppStore {
     history: [],
   }, 'app');
 
-  /** Same proxy typed as plain state: use it for assignments only. */
-  readonly draft = this.store as unknown as AppState;
+  /** The store as plain, typed JSON: writes go through the store, reads are untracked. */
+  readonly draft = this.store.$draft;
 }
 ```
 
@@ -96,8 +96,8 @@ signalStore.destroyStore('dashboard'); // release it
 ## Read and write
 
 Read through `store` with a call; write with an assignment. The declared type of a leaf is
-callable, so under `strict` TypeScript rejects `store.user.name = 'Ada'`: assign through the
-`draft` view. `setValue(path, value)` also writes but is not type-checked (any path and value
+callable, so under `strict` TypeScript rejects `store.user.name = 'Ada'`: assign through
+`store.$draft` (typed as the plain data; reads through it are untracked snapshots). `setValue(path, value)` also writes but is not type-checked (any path and value
 compile).
 
 ```ts

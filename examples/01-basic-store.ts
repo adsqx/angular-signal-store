@@ -24,7 +24,7 @@ const store = signalStore.createStore<AppState>({
 
 // The declared type of a leaf is callable, so assignments go through a plain-state view of
 // the same proxy. Reads always go through `store`.
-const draft = store as unknown as AppState;
+const draft = store.$draft;
 
 section('reads and writes');
 check('read a leaf', store.user.name(), 'Ann');

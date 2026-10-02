@@ -1,5 +1,6 @@
 import type { StoreProxy } from '../interfaces/types';
 import type { IStoreInstance } from '../interfaces/store-instance.interface';
+import { bindDraft } from '../proxy/draft';
 import { ProxyFactory } from '../proxy/proxy-factory.class';
 import type { StoreData } from '../types/advanced-types';
 import { CreateStore } from './create-store.class';
@@ -66,5 +67,6 @@ export function buildStore<T extends object>(
   });
   if (typeof options?.metricsThrottleMs === 'number') host.setMetricsThrottle(options.metricsThrottleMs);
   const proxy = factory.createStoreProxy<T>(instance as unknown as IStoreInstance<T>);
+  bindDraft(instance, () => proxy.$draft);
   return { instance, proxy, factory };
 }

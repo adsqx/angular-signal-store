@@ -1,4 +1,5 @@
 import type { CallableProxy, SignalType, StoreData } from '../types/advanced-types';
+import type { Draft } from '../proxy/draft';
 import type { IStoreInstance } from './store-instance.interface';
 
 /**
@@ -18,4 +19,7 @@ export type ProxyCallable<T = unknown> = CallableProxy<T> & {
  */
 export type StoreProxy<T extends object = StoreData> = {
   [K in keyof T]: T[K] extends (...args: unknown[]) => unknown ? T[K] : ProxyCallable<T[K]>;
-} & IStoreInstance<T>;
+} & IStoreInstance<T> & {
+  /** Plain-typed write view: `store.$draft.user.name = 'Ada'`. Reads are untracked; writes go through the store. */
+  readonly $draft: Draft<T>;
+};

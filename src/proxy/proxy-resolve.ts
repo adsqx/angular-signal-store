@@ -3,14 +3,16 @@ import { getActiveConsumer } from '@angular/core/primitives/signals';
 import { PathUtils } from '../utils/path-utils';
 import { ARRAY_MEMBER_KINDS, resolveArrayMember, type ArrayMemberKind, type BoundMethod } from './array-proxy-methods';
 import { createProxyApiMethod, PROXY_API_KEYS } from './pipeline';
+import { rootDraft } from './draft';
 import type { CoercionKey, ProxyNode } from './proxy-node';
 
-type SpecialKind = 'value' | 'signal' | 'api' | 'rx' | Exclude<CoercionKey, symbol> | ArrayMemberKind;
+type SpecialKind = 'value' | 'signal' | 'draft' | 'api' | 'rx' | Exclude<CoercionKey, symbol> | ArrayMemberKind;
 
 /** Every property name a node answers itself, looked up once per cache miss. */
 const SPECIAL: ReadonlyMap<string, SpecialKind> = new Map<string, SpecialKind>([
   ['$val', 'value'],
   ['$signal', 'signal'],
+  ['$draft', 'draft'],
   ...PROXY_API_KEYS.map((key) => [key, 'api'] as const),
   ['pipe', 'rx'],
   ['subscribe', 'rx'],
@@ -31,6 +33,9 @@ export function resolveMiss(node: ProxyNode, key: string): unknown {
     case 'value':
     case 'signal':
       return helperValue(node, kind);
+    case 'draft':
+      if (node.isRoot) return rootDraft(node.ctx);
+      break;
     case 'api':
       return createProxyApiMethod(key, node.ctx.host, node.path);
     case 'toString':

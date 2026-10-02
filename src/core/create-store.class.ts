@@ -16,6 +16,7 @@ import {
   ObservableType
 } from '../types/advanced-types';
 import { StoreErrorFactory } from '../types/errors';
+import { draftOf, type Draft } from '../proxy/draft';
 
 // Array members are declared in CreateStoreArrayApi and installed by installArrayForwarders (static block).
 export interface CreateStore<T extends object = StoreData> extends CreateStoreArrayApi<T> {}
@@ -28,6 +29,11 @@ export class CreateStore<T extends object = StoreData> extends CreateStoreBase<T
   static {
     // Bound to the class definition itself, so no bundler can keep the class and drop its members.
     installArrayForwarders(CreateStore.prototype);
+  }
+
+  /** Plain-typed write view of the store (same view as `store.$draft`); reads are untracked. */
+  get draft(): Draft<T> {
+    return draftOf<T>(this);
   }
 
   // Writes: overloads are strict path, typed literal fallback, and dynamic string fallback
