@@ -10,7 +10,7 @@ const cloneShallow = (value: unknown): unknown =>
   !value || typeof value !== 'object' ? value : Array.isArray(value) ? [...value] : { ...(value as Record<string, unknown>) };
 
 /** Manages the computed signals of a single store instance. */
-export class ComputedService<TStore extends StoreData = StoreData> {
+export class ComputedService<TStore extends object = StoreData> {
   private readonly nodes = new FlatStoreMap<Signal<unknown>>();
 
   constructor(

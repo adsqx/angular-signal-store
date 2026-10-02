@@ -16,6 +16,6 @@ export type ProxyCallable<T = unknown> = CallableProxy<T> & {
  * Type for the root store proxy. Each field of the store is exposed
  * as a callable proxy while all store instance methods are also available.
  */
-export type StoreProxy<T extends StoreData = StoreData> = {
+export type StoreProxy<T extends object = StoreData> = {
   [K in keyof T]: T[K] extends (...args: unknown[]) => unknown ? T[K] : ProxyCallable<T[K]>;
 } & IStoreInstance<T>;

@@ -39,7 +39,7 @@ export const BEHAVIOR_KIND: ReactiveKind = {
  * writes by normalized path, wake, batching, configuration, lifecycle. The path-typed overload
  * families live on the `CreateStore` facade that extends it.
  */
-export class CreateStoreBase<T extends StoreData = StoreData> {
+export class CreateStoreBase<T extends object = StoreData> {
   store: T = {} as T;
 
   get computedStore(): Record<string, SignalType<unknown>> {
@@ -51,7 +51,12 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
   }
 
   get createServiceGetter(): CreateStoreService {
-    return this.createService;
+    return this.service;
+  }
+
+  /** The service as its non-generic shape, for helpers shared across stores (T only narrows reads). */
+  private get service(): CreateStoreService {
+    return this.createService as unknown as CreateStoreService;
   }
 
   // Backward-compatible alias of `createServiceGetter`
@@ -73,8 +78,8 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     devService?: AngularStoreDevtools
   ) {
     this.createService = new CreateStoreService<T>(storeName, signalStore);
-    this.devtools = new StoreDevtools(signalStore, storeName, devService, this.createService);
-    this.mutator = new StoreMutator(() => this.store, this.createService, this.devtools);
+    this.devtools = new StoreDevtools(signalStore, storeName, devService, this.service);
+    this.mutator = new StoreMutator(() => this.store as StoreData, this.service, this.devtools);
     this.createService.resetWriteCursor = (arrayPath, fromIndex) => this.mutator.resetCursor(arrayPath, fromIndex);
 
     if (!storeName || typeof storeName !== 'string') {
@@ -152,7 +157,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
   /** Read (creating on first use) the node of `kind`, announcing it to devtools when it was created. */
   protected reactive(kind: ReactiveKind, path: string): unknown {
     const normalized = this.validPath(path, kind.context);
-    const service = this.createService;
+    const service = this.service;
     const existed = kind.exists(service, normalized);
     const value = kind.read(service, normalized);
     if (!existed && kind.exists(service, normalized)) kind.announceAdd(this.devtools, normalized);

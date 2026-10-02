@@ -540,8 +540,7 @@ devtools.action$.subscribe((event) => {
 The declarations describe reads and path-based APIs precisely, and are loose or silent about
 a few proxy-only behaviours. Know these edges:
 
-**Declare state with `type`, not `interface`.** `createStore<T extends Record<string, unknown>>`
-rejects an interface (`Index signature for type 'string' is missing`). A `type` alias is fine.
+**State can be a `type` or an `interface`.** `createStore<T extends object>` accepts both.
 
 **Reads are typed.** `store.user.name()` is `string`, `store.services()` is the element array,
 `store.services.length` is `number`, and `@for` items are typed.
@@ -744,9 +743,6 @@ memoised signals. Call the result, or use `computed(() => store.services().filte
 
 **`for (const s of store.services)` throws "not iterable".** Iterate the value:
 `for (const s of store.services())`.
-
-**`Type 'AppState' does not satisfy the constraint 'StoreData'`.** Declare the state with
-`type AppState = { ... }`; interfaces lack the implicit index signature.
 
 **`Type 'string' is not assignable to type 'string & (() => string)'`.** Leaves are typed as
 callables. Assign through a write view or use `setValue`; see [TypeScript notes](#typescript-notes).

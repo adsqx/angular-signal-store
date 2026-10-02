@@ -55,7 +55,7 @@ const readPlanCache = new GenerationalCache<ReadPlan>(CACHE_MAX);
 
 export class PathUtils {
   /** Type-safe path value getter; never throws, unsafe or blank paths read as `undefined`. */
-  static getByPath<T extends StoreData, P extends string>(
+  static getByPath<T extends object, P extends string>(
     obj: T | null | undefined,
     path: P
   ): PathValue<T, P> | undefined {
@@ -79,7 +79,7 @@ export class PathUtils {
   }
 
   /** Type-safe path value setter with validation and error handling. */
-  static setByPath<T extends StoreData>(obj: T, path: string, value: unknown): void {
+  static setByPath<T extends object>(obj: T, path: string, value: unknown): void {
     if (!obj || typeof obj !== 'object') {
       throw StoreErrorFactory.typeValidation(path, 'object', typeof obj);
     }

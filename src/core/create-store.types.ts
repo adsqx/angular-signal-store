@@ -14,7 +14,7 @@ import type {
  * installed on its prototype by `installArrayForwarders`. `setArrayMethod`, `deleteFromArray` and
  * `deleteByIndex` stay on the class (see notes there).
  */
-export interface CreateStoreArrayApi<T extends StoreData> {
+export interface CreateStoreArrayApi<T extends object> {
   // Mutations. (`setArrayMethod` stays on the class: declared here, its PathKeys<T> constraints would resolve to their expansion in the public API text.)
   setArrayMethodRef(
     path: string,

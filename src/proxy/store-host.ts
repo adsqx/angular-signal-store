@@ -14,7 +14,7 @@ export interface StoreHost extends IStoreInstance<StoreData> {
 }
 
 /** The single place where a typed store instance is viewed as a `StoreHost`. */
-export function asHost<T extends StoreData>(store: IStoreInstance<T>): StoreHost {
+export function asHost<T extends object>(store: IStoreInstance<T>): StoreHost {
   return store as unknown as StoreHost;
 }
 

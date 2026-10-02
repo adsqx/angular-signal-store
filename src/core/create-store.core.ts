@@ -29,7 +29,7 @@ export type { StoreWakeupMode } from './wake/wake-types';
 
 type BehaviorUpdater = (path: string, value: unknown) => void;
 
-export class CreateStoreService<TState extends StoreData = StoreData> {
+export class CreateStoreService<TState extends object = StoreData> {
   private readonly dependencyTracker = new DependencyTracker();
   private usingComputedStoreFallback = false;
   private readonly ctx: ManagerCtx;

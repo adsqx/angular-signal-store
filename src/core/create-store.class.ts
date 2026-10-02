@@ -18,13 +18,13 @@ import {
 import { StoreErrorFactory } from '../types/errors';
 
 // Array members are declared in CreateStoreArrayApi and installed by installArrayForwarders (static block).
-export interface CreateStore<T extends StoreData = StoreData> extends CreateStoreArrayApi<T> {}
+export interface CreateStore<T extends object = StoreData> extends CreateStoreArrayApi<T> {}
 
 /**
  * The exported store facade: the path-typed overload families (writes, reads, reactive accessors,
  * wake, array mutation) on top of the plumbing in `CreateStoreBase`.
  */
-export class CreateStore<T extends StoreData = StoreData> extends CreateStoreBase<T> {
+export class CreateStore<T extends object = StoreData> extends CreateStoreBase<T> {
   static {
     // Bound to the class definition itself, so no bundler can keep the class and drop its members.
     installArrayForwarders(CreateStore.prototype);

@@ -5,7 +5,7 @@ import type { ArrayElementType, TypedArrayOperations } from './typed-array-opera
 type Match<E> = E | PredicateFn<E>;
 
 /** Fluent, chainable facade over `TypedArrayOperations` for one array path. */
-export class ArrayChain<T extends StoreData, P extends ValidPath<T> & string> {
+export class ArrayChain<T extends object, P extends ValidPath<T> & string> {
   constructor(private readonly ops: TypedArrayOperations<T, P>) {}
   push(value: ArrayElementType<T, P>): this { this.ops.setArrayMethod(value, 'push'); return this; }
   unshift(value: ArrayElementType<T, P>): this { this.ops.setArrayMethod(value, 'unshift'); return this; }

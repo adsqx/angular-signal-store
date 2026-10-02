@@ -51,7 +51,7 @@ function normalizeMutationInput(a: unknown, method: ArrayMutationMethod | undefi
 
 /** Array operations bound to one path of a named store; the store's array members forward here. */
 export class TypedArrayOperations<
-  T extends StoreData = StoreData,
+  T extends object = StoreData,
   P extends ValidPath<T> & string = ValidPath<T> & string
 > {
   private orchestrator?: ArrayMutationOrchestrator;

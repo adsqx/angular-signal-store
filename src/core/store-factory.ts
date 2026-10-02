@@ -22,14 +22,14 @@ export type CreateStoreOptions = {
   };
 };
 
-export interface BuiltStore<T extends StoreData> {
+export interface BuiltStore<T extends object> {
   instance: CreateStore<T>;
   proxy: StoreProxy<T>;
   factory: ProxyFactory;
 }
 
 /** Build the low-level instance, seed it with `val`, and wrap it in its proxy. Registration is the caller's job. */
-export function buildStore<T extends StoreData>(
+export function buildStore<T extends object>(
   host: SignalStore,
   val: T,
   name: string,

@@ -65,7 +65,7 @@ export class ProxyFactory {
 
   private getValueIteratively(host: StoreHost, path: string): unknown {
     const root = host.store;
-    if (!this.config.useInPlaceIteration || path.indexOf('[') !== -1) return readPath(root, path);
+    if (!this.config.useInPlaceIteration || path.indexOf('[') !== -1) return readPath(root as Record<string, unknown>, path);
     if (!root || !path) return undefined;
     let current: unknown = root;
     let start = 0;
@@ -107,7 +107,7 @@ export class ProxyFactory {
     return callableProxy;
   }
 
-  createStoreProxy<T extends StoreData>(storeInstance: IStoreInstance<T>): StoreProxy<T> {
+  createStoreProxy<T extends object>(storeInstance: IStoreInstance<T>): StoreProxy<T> {
     const { strictInvalidPath = false, strictDeleteUndefined = false, strictRootRxjs = false, rxjsAllowedOnRoot = true } = this.config;
     const host = asHost(storeInstance);
     const { setFn, deleteFn } = createWriteFns(host, {

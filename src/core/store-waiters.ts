@@ -17,7 +17,7 @@ export class StoreWaiters {
   private readonly byName = new Map<string, Set<StoreWaiter>>();
 
   /** A promise for the store `name` once it is created (the caller has already checked it does not exist yet). */
-  wait<T extends StoreData>(name: string, options: WaitForStoreOptions): Promise<StoreProxy<T>> {
+  wait<T extends object>(name: string, options: WaitForStoreOptions): Promise<StoreProxy<T>> {
     const abortError = () => Object.assign(new Error(`waitForStore('${name}') aborted.`), { name: 'AbortError' });
     if (options.signal?.aborted) return Promise.reject(abortError());
 

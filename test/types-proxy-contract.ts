@@ -35,3 +35,10 @@ const plain: string = store.user.name.$val;
 const sig: Signal<string> = store.user.name.$signal;
 const itemsVal: Item[] = store.items.$val;
 void [sel, cmp, plain, sig, itemsVal];
+
+// State declared as an interface (no index signature) is accepted.
+interface Settings { theme: string; size: number }
+declare const ss: import('../src/index').SignalStore;
+const settings = ss.createStore<Settings>({ theme: 'dark', size: 1 }, 'settings');
+const theme: string = settings.theme();
+void theme;

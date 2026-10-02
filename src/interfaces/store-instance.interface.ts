@@ -30,7 +30,7 @@ type QueryArg<U> = U extends never ? unknown : PredicateFn<U> | MapFn<U, any> | 
  * overload, a `string` literal fallback that keeps deep paths typed once the `PathKeys`
  * depth is exceeded, and a plain dynamic `string` fallback returning `unknown`.
  */
-export interface IStoreInstance<T extends StoreData = StoreData> {
+export interface IStoreInstance<T extends object = StoreData> {
   /** The current store value (root object). */
   store: T;
 

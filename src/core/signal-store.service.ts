@@ -90,7 +90,7 @@ export class SignalStore {
 
   // `options` is CreateStoreOptions written as an identity mapped type, so the emitted public signature
   // stays a structurally expanded object type instead of an alias reference (API surface unchanged).
-  createStore<T extends StoreData = StoreData>(
+  createStore<T extends object = StoreData>(
     val: T,
     name: string,
     options?: { [K in keyof CreateStoreOptions]: CreateStoreOptions[K] }
@@ -112,7 +112,7 @@ export class SignalStore {
   }
 
   /** Wait for a named proxy without changing the synchronous useStore/getStore contract. */
-  waitForStore<T extends StoreData = StoreData>(
+  waitForStore<T extends object = StoreData>(
     name: string,
     options: WaitForStoreOptions = {}
   ): Promise<StoreProxy<T>> {
