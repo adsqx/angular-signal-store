@@ -112,6 +112,64 @@ const raw = (s: any, storeName: string) => ss.getStore(storeName).returnStore();
   }
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Bug 2a: a reactive read of a path that does not exist yet never re-ran once the data arrived
+ * (`store.user?.name?.()` while `user` is missing, an array index past the end, a primitive parent).
+ * ------------------------------------------------------------------------------------------- */
+{
+  const cases: Array<[string, any, (s: any) => unknown, (s: any, i: any) => void]> = [
+    ['missing root, then assigned', {}, (s) => s.user?.profile?.tags?.(), (s) => { s.user = { profile: { tags: ['r'] } }; }],
+    ['missing child, then setValue', { user: {} }, (s) => s.user.profile?.tags?.(), (s, i) => i.setValue('user.profile.tags', ['r'])],
+    ['primitive parent, then child setValue', { user: { profile: 7 } }, (s) => s.user.profile?.tags?.(), (s, i) => i.setValue('user.profile.tags', { a: 1 })],
+    ['null parent, then replaced', { user: null }, (s) => s.user?.name?.(), (s) => { s.user = { name: 'A' }; }],
+    ['index past the end, then push', { items: [1] }, (s) => s.items[1]?.(), (s) => { s.items.push(2); }],
+    ['index past the end, then setValue array', { items: [] }, (s) => s.items[1]?.(), (s, i) => i.setValue('items', [1, 2])],
+  ];
+  for (const mode of ['exact', 'container'] as const) {
+    for (const [label, init, read, write] of cases) {
+      const name = `reg-${uid++}`;
+      const s: any = ss.createStore(structuredClone(init), name, { dependencyMode: mode } as any);
+      const inst: any = ss.getStore(name);
+      const c = computed(() => J(read(s)));
+      c();
+      write(s, inst);
+      assert(c() === J(read(s)), `[bug2a ${mode}] ${label}: computed ${c()} !== ${J(read(s))}`);
+    }
+  }
+  // Outside a reactive read, probing a missing key must not create version nodes.
+  const name = `reg-${uid++}`;
+  const s: any = ss.createStore({ a: {} } as any, name);
+  const versionNodes = () => (ss.getStore(name).createServiceGetter as any).versions.keys().length as number;
+  const before = versionNodes();
+  void s.a.nope; void s.nope;
+  assert(versionNodes() === before, `[bug2a] untracked probe created version nodes: ${before} -> ${versionNodes()}`);
+  const c = computed(() => s.a.nope?.());
+  c();
+  assert(versionNodes() > before, '[bug2a] a reactive probe of a missing key tracks its version');
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Bug 2b: select() kept a stale value after writes inside batch(), and after a parent branch was
+ * replaced (it re-ran before the version bumps were applied and read the old computed values).
+ * ------------------------------------------------------------------------------------------- */
+{
+  const run = (label: string, init: any, read: (s: any) => unknown, write: (s: any, i: any) => void, expected: unknown[]) => {
+    const name = `reg-${uid++}`;
+    const s: any = ss.createStore(structuredClone(init), name);
+    const inst: any = ss.getStore(name);
+    const seen: unknown[] = [];
+    const sub = inst.select(() => read(s)).subscribe((v: unknown) => seen.push(v));
+    write(s, inst);
+    sub.unsubscribe();
+    assert(J(seen) === J(expected), `[bug2b] ${label}: emitted ${J(seen)} !== ${J(expected)}`);
+  };
+  run('parent replaced', { a: { b: 1 } }, (s) => s.a.b(), (s) => { s.a = { b: 3 }; }, [1, 3]);
+  run('batch, one path, two writes (emits once, at the end)', { a: { b: 1 } }, (s) => s.a.b(), (s, i) => i.batch(() => { s.a.b = 5; s.a.b = 6; }), [1, 6]);
+  run('batch, two paths', { a: { b: 1, c: 1 } }, (s) => s.a.b() + s.a.c(), (s, i) => i.batch(() => { s.a.b = 5; s.a.c = 6; }), [2, 11]);
+  run('batch, array push', { a: [1] }, (s) => s.a().length, (s, i) => i.batch(() => { s.a.push(2); s.a.push(3); }), [1, 3]);
+  run('plain leaf write stays synchronous', { a: { b: 1 } }, (s) => s.a.b(), (s) => { s.a.b = 2; }, [1, 2]);
+}
+
 if (failures.length) {
   console.error(`${failures.length} of ${checks} regression checks FAILED`);
   for (const f of failures.slice(0, 40)) console.error('  - ' + f);

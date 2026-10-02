@@ -151,8 +151,9 @@ export class WakeEngine {
 
   /** Branch replaced: refresh nested behaviors, bump nested versions, drop cached nested proxies. */
   private wakeBranch(normalized: string): void {
-    this.updateBehaviorsByPrefix(normalized, true);
+    // Versions first: a behavior subscriber that reads through the proxy must see fresh computeds.
     this.bumpDescendants(normalized);
+    this.updateBehaviorsByPrefix(normalized, true);
     this.proxyCache.delete(normalized);
   }
 

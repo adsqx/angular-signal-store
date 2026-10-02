@@ -123,6 +123,7 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
         trackProjection: (fn) => this.dependencyTracker.trackProjection(fn),
         resolveVersionPath: (dep) => this.wake.resolve(dep),
         observe: (versionPath) => this.getTrackedObservable(versionPath),
+        afterVersionFlush: (fn) => this.wake.scheduler.afterFlush(fn),
         dependencyMode: () => this.wake.config.dependencyMode
       },
       project

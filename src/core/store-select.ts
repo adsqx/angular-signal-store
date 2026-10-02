@@ -12,6 +12,8 @@ export interface SelectHost<TState> {
   resolveVersionPath(normalized: string): string;
   observe(versionPath: string): Observable<unknown>;
   dependencyMode(): VersionDependencyMode;
+  /** Run `fn` once pending version bumps (an open `batch()`, auto-batching) have been applied. */
+  afterVersionFlush(fn: () => void): void;
 }
 
 /** Dev-only: warn when dependency selection is too broad in 'container' mode. */
@@ -37,6 +39,17 @@ export function selectObservable<TState, TOut>(host: SelectHost<TState>, project
     let closed = false;
     let computing = false;
     let pending = false;
+    let queued = false;
+    // A dependency can change while version bumps are still deferred (inside batch()); reading the
+    // projection then would see the old computed values, so recompute once they are applied.
+    const recomputeWhenSettled = () => {
+      if (queued) return;
+      queued = true;
+      host.afterVersionFlush(() => {
+        queued = false;
+        recompute();
+      });
+    };
 
     const toDepPaths = (deps: string[]): string[] => {
       const tracked = deps.length === 0 && host.usingFallback() ? host.computedKeys() : deps;
@@ -60,7 +73,7 @@ export function selectObservable<TState, TOut>(host: SelectHost<TState>, project
             skipInitial = false;
             return;
           }
-          recompute();
+          recomputeWhenSettled();
         },
         error: (error) => {
           subscriber.error(error);

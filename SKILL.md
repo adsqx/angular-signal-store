@@ -264,8 +264,7 @@ const name = store.getComputed('user.name');                       // Signal<str
 const label$ = store.select(() => `Hi ${store.user.name()}`);      // read through `store`, not the callback argument
 ```
 
-`select()` does not currently re-emit for writes made inside `batch()`; use signals or
-`getObservable` there.
+`select()` emits once, synchronously, when the outermost `batch()` ends, with the final value.
 
 ## Devtools
 

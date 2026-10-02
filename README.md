@@ -782,13 +782,8 @@ outermost batch ends. Read `store.readStore('x')` when you need the fresh value 
 **Devtools show nothing.** Providing `provideSignalStoreDevtools()` is not enough; call
 `signalStore.devActivation(true)`. The package ships the event bus, not a panel.
 
-### Known issues in this release
-
-These are bugs in the current version, listed so you can work around them. Check the changelog
-before relying on them: they are expected to be fixed.
-
-- **`select()` does not re-emit for writes made inside `batch()`.** Use signals or
-  `getObservable(path)` for values that change inside batches.
+**`select()` inside `batch()`.** A selector whose inputs change inside `batch()` emits once,
+synchronously, when the outermost batch ends, with the final value.
 
 ## Compatibility
 

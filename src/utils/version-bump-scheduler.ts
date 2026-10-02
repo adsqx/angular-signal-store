@@ -13,6 +13,7 @@ const START: Record<BumpStrategy, (run: () => void) => number | null> = {
 export class VersionBumpScheduler {
   private depth = 0;
   private pending = new Set<string>();
+  private settledCallbacks: Array<() => void> = [];
   private scheduled = false;
   private strategy: BumpStrategy = 'microtask';
   private throttle = 0;
@@ -34,9 +35,15 @@ export class VersionBumpScheduler {
   flushNow(): void {
     if (this.depth > 0) return;
     this.cancelPending();
-    if (this.pending.size === 0) return;
+    if (this.pending.size === 0) return this.runSettled();
     this.drain();
     this.lastFlush = Date.now();
+  }
+
+  /** Run `fn` once no batch is open and no bump is pending: now, or right after the next flush. */
+  afterFlush(fn: () => void): void {
+    if (this.depth === 0 && this.pending.size === 0 && !this.scheduled) fn();
+    else this.settledCallbacks.push(fn);
   }
 
   queue(paths: string[]): void {
@@ -60,6 +67,7 @@ export class VersionBumpScheduler {
   destroy(): void {
     this.cancelPending();
     this.pending.clear();
+    this.settledCallbacks = [];
     this.depth = 0;
     this.lastFlush = 0;
   }
@@ -77,6 +85,14 @@ export class VersionBumpScheduler {
     const items = this.pending;
     this.pending = new Set();
     this.flush(items);
+    this.runSettled();
+  }
+
+  private runSettled(): void {
+    if (this.settledCallbacks.length === 0 || this.depth > 0) return;
+    const callbacks = this.settledCallbacks;
+    this.settledCallbacks = [];
+    for (const fn of callbacks) fn();
   }
 
   private execute(): void {

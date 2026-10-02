@@ -1,4 +1,5 @@
 import type { Observable, OperatorFunction } from 'rxjs';
+import { getActiveConsumer } from '@angular/core/primitives/signals';
 import { PathUtils } from '../utils/path-utils';
 import { ARRAY_MEMBER_KINDS, resolveArrayMember, type ArrayMemberKind, type BoundMethod } from './array-proxy-methods';
 import { createProxyApiMethod, PROXY_API_KEYS } from './pipeline';
@@ -55,10 +56,31 @@ export function resolveMiss(node: ProxyNode, key: string): unknown {
   }
 
   const path = node.childPath(key);
-  if (node.read(path) === undefined) return undefined;
+  if (node.read(path) === undefined) {
+    trackMissing(node, path);
+    return undefined;
+  }
   const child = node.ctx.makeChild(path);
   node.remember(key, child);
   return child;
+}
+
+/**
+ * A reactive read of a path that does not exist yet (`store.user?.name?.()` while `user` is
+ * missing) must still depend on that path, or the consumer never re-runs once the data arrives.
+ * Only inside a reactive read (an active signal consumer, or a `select()` collecting reads), so
+ * plain code that probes missing keys creates no version nodes.
+ */
+function trackMissing(node: ProxyNode, path: string): void {
+  const { service } = node.ctx;
+  const collecting = service.isCollectingReads();
+  if (!collecting && getActiveConsumer() === null) return;
+  if (!PathUtils.isValidPath(path)) return;
+  const normalized = PathUtils.normalizePath(path);
+  if (collecting) service.registerReadNormalized(normalized);
+  // There is no computed for a missing path; depend on its version signal, which writes to the
+  // path or any of its descendants bump once the data arrives.
+  service.getVersion(service.resolveVersionPathNormalized(normalized))();
 }
 
 /** `node.$val` / `node.$signal`: the plain (untracked) value or computed of the node's own path. */
