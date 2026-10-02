@@ -51,11 +51,6 @@ const tiles = computed(() => (tilesRuns++, store.dashboard.tiles()));
 const user = computed(() => (userRuns++, JSON.stringify(store.user())));
 const readAll = () => [name(), tiles(), user()];
 readAll();
-
-// The first write to a freshly consumed path may also re-run its siblings once, so warm up.
-draft.user.name = 'warm-up';
-draft.dashboard.tiles = 0;
-readAll();
 [nameRuns, tilesRuns, userRuns] = [0, 0, 0];
 
 draft.user.name = 'Grace';

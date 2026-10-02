@@ -769,10 +769,6 @@ Keys containing `.` are read as nested paths.
 the proxy. After `draft.user = obj`, changing `obj` (or an object returned by `store.user()`)
 bypasses it. Mutate through the proxy, or call `wakeUp(path)` after an out-of-band change.
 
-**The first write after a path gains its first consumer also re-ran a sibling consumer once.**
-In the current release, the first write to a freshly consumed path can re-run its siblings'
-consumers a single time; subsequent writes are exact. Results are unchanged.
-
 **Assigning `undefined` removed the key.** That is by design: `undefined` deletes. Use `null`
 for "no value", or set `strict: { deleteUndefined: true }` to make it throw.
 

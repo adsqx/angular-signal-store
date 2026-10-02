@@ -170,6 +170,26 @@ const raw = (s: any, storeName: string) => ss.getStore(storeName).returnStore();
   run('plain leaf write stays synchronous', { a: { b: 1 } }, (s) => s.a.b(), (s) => { s.a.b = 2; }, [1, 2]);
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Bug 3: the first write to a freshly consumed path also re-ran sibling consumers once (the
+ * devtools computed snapshot was read inside the consumer that created the computed).
+ * ------------------------------------------------------------------------------------------- */
+for (const dev of [false, true]) {
+  const local = new SignalStore(undefined as any);
+  if (dev) local.devActivation(true);
+  const s: any = local.createStore({ a: 1, b: 2, c: 3 } as any, `reg-${uid++}`);
+  const runs = { a: 0, b: 0, c: 0 };
+  const ca = computed(() => (runs.a++, s.a()));
+  const cb = computed(() => (runs.b++, s.b()));
+  const cc = computed(() => (runs.c++, s.c()));
+  const all = () => [ca(), cb(), cc()];
+  all();
+  s.a = 10;
+  all();
+  assert(J(runs) === J({ a: 2, b: 1, c: 1 }), `[bug3 dev=${dev}] sibling consumers re-ran: ${J(runs)}`);
+  if (dev) local.devActivation(false);
+}
+
 if (failures.length) {
   console.error(`${failures.length} of ${checks} regression checks FAILED`);
   for (const f of failures.slice(0, 40)) console.error('  - ' + f);

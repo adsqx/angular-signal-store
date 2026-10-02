@@ -1,4 +1,4 @@
-import type { Signal } from '@angular/core';
+import { untracked, type Signal } from '@angular/core';
 import type { StoreDevToolsAction } from '../devtools/types';
 import type { AngularStoreDevtools } from './devtools-contract';
 import type { CreateStoreService } from './create-store.core';
@@ -21,8 +21,8 @@ export function snapshotForDevtools(value: unknown): unknown {
 }
 
 /**
- * The one emission path of a `CreateStore` for its store-level events. Nothing is emitted unless dev
- * tools are active; computed and behavior events still gather their payload first (see `computed`).
+ * The one emission path of a `CreateStore` for its store-level events. Every method returns before
+ * touching the store or the adapter unless dev tools are active.
  */
 export class StoreDevtools {
   constructor(
@@ -41,18 +41,19 @@ export class StoreDevtools {
     this.emit('SET_VALUE_OBSERVE', { path, value: snapshotForDevtools(value), oldValue: snapshotForDevtools(oldValue) });
   }
 
-  // The keys and the snapshot are gathered even while dev tools are inactive, as they always
-  // were: reading the computed signals inside a consumer's reactive context links that consumer
-  // to its siblings, and existing consumers' re-run timing depends on that link.
+  // The snapshot reads every computed signal; untracked, so a consumer that happens to be running
+  // (a computed is added on its first read) does not start depending on its siblings.
   computed(action: 'add' | 'remove', path: string): void {
+    if (!this.active) return;
     const store = this.service.getComputedStore();
     const keys = this.adapter ? this.adapter.getComputedKeys(store) : Object.keys(store);
-    const snapshot = this.computedSnapshot();
+    const snapshot = untracked(() => this.computedSnapshot());
     this.emit('COMPUTED_STORE_UPDATE', { action, path, keys, snapshot });
   }
 
   /** `withState`: attach the live BehaviorSubject map (`currentState`). */
   behavior(path: string, action: BehaviorAction, value?: unknown, withState = false): void {
+    if (!this.active) return;
     const keys = this.adapter ? this.adapter.getBehaviorKeys(this.service.getBehaviorStore()) : [];
     this.emit('BEHAVIOR_STORE_UPDATE', {
       action,
