@@ -17,9 +17,20 @@ JSNQ. Consumers of the published package can install it as a skill; see the READ
 
 ## Repository layout
 
-- `src/core/` — `SignalStore` service, `CreateStore`, named registry, devtools contract.
-- `src/proxy/` — the callable nested proxy handlers.
-- `src/operations/`, `src/utils/` — array operations, path utilities, wake scheduling.
+- `src/core/` — `signal-store.service.ts` (`SignalStore`: registry, factory, waiters via
+  `store-factory.ts` / `store-waiters.ts`), `create-store.class.ts` + `create-store.base.ts`
+  (the exported `CreateStore` facade; array methods are installed from `array-forwarders.ts`
+  and typed in `create-store.types.ts`), `create-store.core.ts` (`CreateStoreService`),
+  `mutation.ts` (the single write pipeline), `store-devtools.ts`, `store-select.ts`, the
+  `jsnq-contract.ts` / `devtools-contract.ts` seams.
+- `src/core/wake/` — the wake engine (version bumps, ancestor cache, wake modes).
+- `src/core/services/` — behavior, computed, version and proxy-cache managers.
+- `src/proxy/` — the callable nested proxy: `proxy-node.ts` (per-node state and the shared
+  traps — the hot path), `proxy-resolve.ts` (cold special-name lookup),
+  `array-proxy-methods.ts`, `proxy-factory.class.ts`, `store-writes.ts`, and `pipeline/` (the
+  jsnq `mutate` / `query` / `$query*` / `$liveQuery*` surface).
+- `src/operations/`, `src/utils/` — typed array operations, path utilities, flat store map,
+  scheduling.
 - `src/devtools/` — optional adapter, exposed as the `/devtools` secondary entry point.
 - `test/` — headless smoke and throughput bench (run under `bun`, no browser needed).
 
