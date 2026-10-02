@@ -13,8 +13,12 @@ import { wakeOptions } from './wake/wake-types';
  */
 export class StoreMutator {
   /** Cached path plans and the cursor that applies them, created on the first write. */
-  /** Segments of the node the cursor currently points at (mirrors the cursor's own bookkeeping). */
+  /**
+   * Where the cursor currently points (mirrors the cursor's own bookkeeping): the parent segments
+   * of the last write, or the path of the last prefetch, parsed only when an array reorders.
+   */
   private cursorAt: readonly string[] | null = null;
+  private cursorAtPath: string | null = null;
   private cursorState?: { plans: FlatStoreMap<JsonPathPlan>; cursor: JsonDataCursor };
 
   constructor(
@@ -69,7 +73,7 @@ export class StoreMutator {
    * still valid and is kept: the array object itself is unchanged.
    */
   resetCursor(arrayPath: string, fromIndex: number): void {
-    const at = this.cursorAt;
+    const at = this.cursorAt ?? (this.cursorAtPath !== null ? createJsonPathPlan(this.cursorAtPath).segments : null);
     if (!at) return;
     const array = createJsonPathPlan(arrayPath).segments;
     if (at.length <= array.length) return;
@@ -77,12 +81,14 @@ export class StoreMutator {
     if (Number(at[array.length]) < fromIndex) return;
     this.cursors.cursor.clear();
     this.cursorAt = null;
+    this.cursorAtPath = null;
   }
 
   prefetch(path: string, node: Record<string, unknown> | null): void {
     try {
       this.cursors.cursor.prefetch(path, node);
-      this.cursorAt = createJsonPathPlan(path).segments;
+      this.cursorAt = null;
+      this.cursorAtPath = path;
     } catch (e) {
       console.warn('CreateStore prefetchCursor error:', e);
     }
@@ -92,6 +98,7 @@ export class StoreMutator {
     this.cursorState?.plans.clear();
     this.cursorState?.cursor.clear();
     this.cursorAt = null;
+    this.cursorAtPath = null;
   }
 
   /** Cursor write at a normalized path; returns the previous value. */
@@ -100,7 +107,10 @@ export class StoreMutator {
     const found = plans.getOrCreate(normalized, createJsonPathPlan);
     const plan = found.path === normalized ? found : createJsonPathPlan(normalized);
     const result = cursor.writeWithPlan(this.getStore() as Record<string, unknown>, plan, value);
-    if (plan.key != null) this.cursorAt = plan.parentSegments;
+    if (plan.key != null) {
+      this.cursorAt = plan.parentSegments;
+      this.cursorAtPath = null;
+    }
     return result.previous;
   }
 
