@@ -34,14 +34,14 @@ const handlers: Record<ArrayQueryMethodWithLength, ArrayQueryHandler> = {
       : result;
   },
   findIndex: (arr, input) => arr.findIndex(asPredicate(input)),
-  filter: (arr, input) => arr.filter(input as PredicateFn<unknown>),
+  filter: (arr, input) => arr.filter(asPredicate(input)),
   map: (arr, input) => arr.map(input as MapFn<unknown, unknown>),
   reduce: (arr, input, args) =>
     args.length > 0
       ? arr.reduce(input as ReduceFn<unknown, unknown>, args[0])
       : arr.reduce(input as ReduceFn<unknown, unknown>),
-  some: (arr, input) => arr.some(input as PredicateFn<unknown>),
-  every: (arr, input) => arr.every(input as PredicateFn<unknown>),
+  some: (arr, input) => arr.some(asPredicate(input)),
+  every: (arr, input) => arr.every(asPredicate(input)),
   includes: (arr, input) => arr.includes(input),
   indexOf: (arr, input) => arr.indexOf(input),
   length: (arr) => arr.length

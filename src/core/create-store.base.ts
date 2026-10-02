@@ -1,3 +1,4 @@
+import type { StoreProxy } from '../interfaces/types';
 import { TypedArrayOperations, ArrayChain } from '../operations/typed-array-operations.class';
 import { PathUtils } from '../utils/path-utils';
 import type { SignalStore } from './signal-store.service';
@@ -168,12 +169,13 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     this.devtools.computed('remove', path);
   }
 
-  select<TOut>(project: (s: T) => TOut) {
-    return this.createService.select(project);
+  select<TOut>(project: (s: StoreProxy<T>) => TOut) {
+    // The service hands the projection the live proxy; its own signature predates the proxy typing.
+    return this.createService.select(project as unknown as (s: T) => TOut);
   }
 
-  computedOf<TOut>(project: (s: T) => TOut) {
-    return this.createService.computedOf(project);
+  computedOf<TOut>(project: (s: StoreProxy<T>) => TOut) {
+    return this.createService.computedOf(project as unknown as (s: T) => TOut);
   }
 
   // Wake

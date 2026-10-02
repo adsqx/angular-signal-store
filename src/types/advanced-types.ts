@@ -105,8 +105,44 @@ export type StoreData = Record<string, unknown>;
 
 type IsFunction<T> = T extends (...args: unknown[]) => unknown ? true : false;
 
-export type CallableProxy<T> = T & {
+/** An array element test: a predicate, or a value compared with `===`. */
+type ElementTest<E> = ((value: E, index: number, array: E[]) => unknown) | E;
+
+/**
+ * The query methods of an array node return a reactive signal of the result (not the result itself):
+ * `store.items.filter(fn)()` reads it and re-runs its consumer when the array changes.
+ */
+export interface ArrayQueryProxy<E> {
+  filter(test: ElementTest<E>): SignalType<E[]>;
+  find(test: ElementTest<E>): SignalType<E | undefined>;
+  findIndex(test: ElementTest<E>): SignalType<number>;
+  some(test: ElementTest<E>): SignalType<boolean>;
+  every(test: ElementTest<E>): SignalType<boolean>;
+  map<U>(fn: (value: E, index: number, array: E[]) => U): SignalType<U[]>;
+  reduce<U>(fn: (accumulator: U, value: E, index: number, array: E[]) => U, initial: U): SignalType<U>;
+  includes(value: E): SignalType<boolean>;
+  indexOf(value: E): SignalType<number>;
+}
+
+type ArrayQueryKey = keyof ArrayQueryProxy<unknown>;
+
+/** Present on every node: `$val` is the plain (untracked) value, `$signal` its computed signal. */
+interface NodeHelpers<T> {
+  readonly $val: T;
+  readonly $signal: SignalType<T>;
+}
+
+/** Arrays keep their element/mutation surface but expose the query methods as signal factories. */
+type CallableArray<T extends readonly unknown[]> = Omit<T, ArrayQueryKey> & ArrayQueryProxy<T[number]> & NodeHelpers<T> & {
   (): T;
 } & {
-  [K in keyof T]: IsFunction<T[K]> extends true ? T[K] : CallableProxy<T[K]>;
+  [K in Exclude<keyof T, ArrayQueryKey>]: IsFunction<T[K]> extends true ? T[K] : CallableProxy<T[K]>;
 };
+
+export type CallableProxy<T> = T extends readonly unknown[]
+  ? CallableArray<T>
+  : T & NodeHelpers<T> & {
+      (): T;
+    } & {
+      [K in keyof T]: IsFunction<T[K]> extends true ? T[K] : CallableProxy<T[K]>;
+    };

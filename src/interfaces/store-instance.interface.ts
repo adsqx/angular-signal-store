@@ -1,3 +1,4 @@
+import type { StoreProxy } from './types';
 import {
   StoreData, PathValue, ValidPath, PathKeys, ArrayMutationMethod, ArrayQueryMethod, ArrayOperationResult,
   SpliceOperation, PredicateFn, MapFn, ReduceFn, ObservableType, SignalType, BehaviorSubjectType
@@ -39,8 +40,10 @@ export interface IStoreInstance<T extends StoreData = StoreData> {
   getObservable(path: string): ObservableType<unknown>;
 
   /** Projections; dependencies are collected from callable proxy reads. */
-  select<TOut>(project: (state: T) => TOut): ObservableType<TOut>;
-  computedOf<TOut>(project: (state: T) => TOut): SignalType<TOut>;
+  /** `state` is the live store proxy: read through it (`state.user.name()`) to track dependencies. */
+  select<TOut>(project: (state: StoreProxy<T>) => TOut): ObservableType<TOut>;
+  /** `state` is the live store proxy: read through it (`state.user.name()`) to track dependencies. */
+  computedOf<TOut>(project: (state: StoreProxy<T>) => TOut): SignalType<TOut>;
 
   /** Sets a value at the given path. */
   setValue<P extends PathKeys<T>>(path: P, value: PathValue<T, P>): void;

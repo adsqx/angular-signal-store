@@ -574,10 +574,7 @@ your state type, but a mistyped path still compiles (its value type is `unknown`
 | --- | --- |
 | `useStore(name)` returns `StoreProxy<StoreData>` | Cast: `signalStore.useStore('app') as unknown as StoreProxy<AppState>`. `waitForStore<AppState>()` is typed. |
 | `getStore(name)` returns `CreateStore<StoreData>` | Cast to `CreateStore<AppState>` (through `unknown`) for typed array chains. |
-| `select` / `computedOf` callback parameter is typed as plain state | The parameter is the live proxy at runtime. Ignore it and read through your `store` variable. |
 | `mutate`, `$query`, `$liveQuery`, ... are not declared | Declare the `Queryable<T>` interface shown above. |
-| Array query methods (`filter`, `find`, ...) are declared as plain `Array` methods | They return signals at runtime. Use `computed(() => store.items().filter(...))`. |
-| `$val` / `$signal` are declared on top-level fields only | They exist at runtime on every node; prefer `getComputed(path)`. |
 | Optional or dynamic keys | Declare `preferences?: Record<string, unknown>` (or an index signature) and guard reads with `?.`. |
 
 ## Performance
