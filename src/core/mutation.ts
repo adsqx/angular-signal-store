@@ -13,6 +13,8 @@ import { wakeOptions } from './wake/wake-types';
  */
 export class StoreMutator {
   /** Cached path plans and the cursor that applies them, created on the first write. */
+  /** Segments of the node the cursor currently points at (mirrors the cursor's own bookkeeping). */
+  private cursorAt: readonly string[] | null = null;
   private cursorState?: { plans: FlatStoreMap<JsonPathPlan>; cursor: JsonDataCursor };
 
   constructor(
@@ -61,9 +63,26 @@ export class StoreMutator {
     this.cursors.cursor.invalidateForDeletion(normalized);
   }
 
+  /**
+   * Forget the cached write cursor when it sits inside an element of the array at `arrayPath` whose
+   * index is `fromIndex` or later (that element moved or was removed). A cursor anywhere else is
+   * still valid and is kept: the array object itself is unchanged.
+   */
+  resetCursor(arrayPath: string, fromIndex: number): void {
+    const at = this.cursorAt;
+    if (!at) return;
+    const array = createJsonPathPlan(arrayPath).segments;
+    if (at.length <= array.length) return;
+    for (let i = 0; i < array.length; i++) if (at[i] !== array[i]) return;
+    if (Number(at[array.length]) < fromIndex) return;
+    this.cursors.cursor.clear();
+    this.cursorAt = null;
+  }
+
   prefetch(path: string, node: Record<string, unknown> | null): void {
     try {
       this.cursors.cursor.prefetch(path, node);
+      this.cursorAt = createJsonPathPlan(path).segments;
     } catch (e) {
       console.warn('CreateStore prefetchCursor error:', e);
     }
@@ -72,13 +91,17 @@ export class StoreMutator {
   destroy(): void {
     this.cursorState?.plans.clear();
     this.cursorState?.cursor.clear();
+    this.cursorAt = null;
   }
 
   /** Cursor write at a normalized path; returns the previous value. */
   put(normalized: string, value: unknown): unknown {
     const { plans, cursor } = this.cursors;
-    const plan = plans.getOrCreate(normalized, createJsonPathPlan);
-    return cursor.writeWithPlan(this.getStore() as Record<string, unknown>, plan.path === normalized ? plan : createJsonPathPlan(normalized), value).previous;
+    const found = plans.getOrCreate(normalized, createJsonPathPlan);
+    const plan = found.path === normalized ? found : createJsonPathPlan(normalized);
+    const result = cursor.writeWithPlan(this.getStore() as Record<string, unknown>, plan, value);
+    if (plan.key != null) this.cursorAt = plan.parentSegments;
+    return result.previous;
   }
 
   /** Remove the key (or splice the index, for arrays) at `normalized`; a missing or primitive parent is a no-op. */

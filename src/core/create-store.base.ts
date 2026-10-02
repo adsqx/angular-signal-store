@@ -74,6 +74,7 @@ export class CreateStoreBase<T extends StoreData = StoreData> {
     this.createService = new CreateStoreService<T>(storeName, signalStore);
     this.devtools = new StoreDevtools(signalStore, storeName, devService, this.createService);
     this.mutator = new StoreMutator(() => this.store, this.createService, this.devtools);
+    this.createService.resetWriteCursor = (arrayPath, fromIndex) => this.mutator.resetCursor(arrayPath, fromIndex);
 
     if (!storeName || typeof storeName !== 'string') {
       throw StoreErrorFactory.pathValidation(storeName, 'Store name must be a non-empty string');

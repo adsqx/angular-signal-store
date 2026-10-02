@@ -39,6 +39,12 @@ export class CreateStoreService<TState extends StoreData = StoreData> {
   private _computedSvc?: ComputedService<TState>;
   private cloneComputedOutputs = true;
   private _storeProxy?: object;
+  /**
+   * Drops the store's cached write cursor when it sits inside element `fromIndex` or later of the
+   * array at `arrayPath` (installed by the store that owns the cursor). Called when array elements
+   * move, so a later write to `a.<i>` cannot land on the element that used to be there.
+   */
+  resetWriteCursor?: (arrayPath: string, fromIndex: number) => void;
 
   startCollect(): void { this.dependencyTracker.startCollect(); }
   stopCollect(): Set<string> | null { return this.dependencyTracker.stopCollect(); }

@@ -66,11 +66,15 @@ export class ArrayMutationOrchestrator {
       throw new Error(`Index ${index} out of bounds for array at ${arrayPath}`);
     }
     arrayRef[index] = newValue;
+    this.store.createServiceGetter.resetWriteCursor?.(arrayPath, index);
     this.store.wakeUpArrayMutation(`${arrayPath}.${index}`, newValue);
   }
 
   finalizeArrayChange(arrayPath: string, value: unknown, oldLength: number, newLength: number, invalidateFrom: number | null): void {
     const service = this.store.createServiceGetter;
+    // The write cursor may sit inside an element that just moved or was removed.
+    const movedFrom = invalidateFrom ?? (newLength < oldLength ? newLength : null);
+    if (movedFrom !== null) service.resetWriteCursor?.(arrayPath, movedFrom);
     this.store.wakeUpArrayMutation(arrayPath, value, () => {
       if (invalidateFrom !== null && service.hasIndexedProxyCacheFrom(arrayPath, invalidateFrom)) {
         service.deleteIndexedProxyCacheRange(arrayPath, invalidateFrom, oldLength);

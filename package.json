@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p examples/tsconfig.json",
     "test:smoke": "bun test/smoke.ts",
+    "test:regressions": "bun test/regressions.test.ts",
     "bench:store": "bun test/store-throughput-bench.ts",
     "verify:exports": "node scripts/verify-exports.mjs",
     "test:jsnq-optional": "bun test/jsnq-optional.test.ts",

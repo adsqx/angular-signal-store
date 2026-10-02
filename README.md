@@ -787,11 +787,6 @@ outermost batch ends. Read `store.readStore('x')` when you need the fresh value 
 These are bugs in the current version, listed so you can work around them. Check the changelog
 before relying on them: they are expected to be fixed.
 
-- **A write to an array index can be lost after the array is reordered.** If an index (say
-  `items[0]`) was written through the proxy or `setValue` earlier, and the array is then
-  reordered or shortened at the front (`splice`, `shift`, `deleteByIndex`, `reverse`, `sort`),
-  the next write to `items[0]` can land on the element that used to be there. Workaround: call
-  `store.cleanupPath('items')` after the reorder, or assign the whole array.
 - **`select()` does not re-emit for writes made inside `batch()`.** Use signals or
   `getObservable(path)` for values that change inside batches.
 

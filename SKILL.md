@@ -298,6 +298,3 @@ load it.
 - Import `@adsq/angular-signal-store/jsnq` once before using `mutate` / `$query`.
 - Derive array data with `computed(() => store.items()...)`, not the proxy's query methods.
 - Do not import from `dist/` or deep internal paths; use the documented entries only.
-- Known issue: after reordering or removing array elements (`splice`, `shift`, `deleteByIndex`,
-  `reverse`, `sort`), call `store.cleanupPath('<array path>')` before writing to an index that was
-  written earlier; otherwise the write can land on the element that used to be there.
