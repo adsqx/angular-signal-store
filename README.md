@@ -59,7 +59,7 @@ bun add @adsq/angular-signal-store
 | --- | --- | --- |
 | `@angular/core` | `>=20.0.0 <23.0.0` | Angular 20, 21 and 22. |
 | `rxjs` | `^6.5.3 \|\| ^7.4.0` | Used for `getObservable` and `select`. |
-| `@adsq/jsnq` | `^0.1.0` | The core uses its small path engine, so it is always required at runtime. Its query pipeline is only loaded through the optional `/jsnq` entry. |
+| `@adsq/jsnq` | `^0.2.0` | The core uses its small path engine, so it is always required at runtime. Its query pipeline is only loaded through the optional `/jsnq` entry. |
 
 npm and bun install peers automatically. Under strict installers (pnpm, Yarn PnP) declare
 `@adsq/jsnq` in your own `package.json` too, especially if you import JSNQ operators
