@@ -1,4 +1,4 @@
-import { Observable, Subscription, combineLatest } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import type { VersionDependencyMode } from '../utils/path-utils';
 
 /** What `select()` needs from its store service. */
@@ -66,19 +66,23 @@ export function selectObservable<TState, TOut>(host: SelectHost<TState>, project
 
       if (depPaths.length === 0) return;
 
-      let skipInitial = true;
-      depSub = combineLatest(depPaths.map((depPath) => host.observe(depPath))).subscribe({
+      // combineLatest semantics without the operator (only what Angular already loads): once every
+      // dependency has emitted, each emission recomputes; that first combined emission is the
+      // current state and is skipped.
+      let waiting = depPaths.length;
+      const seen = new Array<boolean>(waiting).fill(false);
+      const subs = new Subscription();
+      depSub = subs;
+      depPaths.forEach((depPath, i) => subs.add(host.observe(depPath).subscribe({
         next: () => {
-          if (skipInitial) {
-            skipInitial = false;
+          if (waiting > 0) {
+            if (!seen[i]) { seen[i] = true; waiting--; }
             return;
           }
           recomputeWhenSettled();
         },
-        error: (error) => {
-          subscriber.error(error);
-        }
-      });
+        error: (error) => subscriber.error(error),
+      })));
     };
 
     const recompute = () => {

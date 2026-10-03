@@ -4,7 +4,7 @@ import { StoreProxy } from '../interfaces/types';
 import type { IStoreInstance } from '../interfaces/store-instance.interface';
 import type { ProxyFactory } from '../proxy/proxy-factory.class';
 import { createCallableProxy as createCallableProxyUtil } from '../proxy/proxy-node';
-import { EMPTY, Observable, Subscription } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';
 import { getJsonBySegments } from '@adsq/jsnq/data-engine';
@@ -15,6 +15,9 @@ import { SIGNAL_STORE_DEVTOOLS, emitDevEvent, type AngularStoreDevtools, type De
 import { buildStore, type CreateStoreOptions } from './store-factory';
 import { StoreWaiters, type WaitForStoreOptions } from './store-waiters';
 import { wakeOptions } from './wake/wake-types';
+
+/** RxJS `EMPTY` without importing it (Angular itself does not load it). */
+const EMPTY = new Observable<never>((subscriber) => subscriber.complete());
 
 export type { DevToolsEvent } from './devtools-contract';
 export type { WaitForStoreOptions } from './store-waiters';
