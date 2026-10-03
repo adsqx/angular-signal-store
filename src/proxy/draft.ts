@@ -1,3 +1,4 @@
+import type { Draft as JsonDraft } from '@adsq/jsnq/core/types';
 import type { ProxyCallable } from '../interfaces/types';
 import type { IStoreInstance } from '../interfaces/store-instance.interface';
 import type { StoreData } from '../types/advanced-types';
@@ -6,13 +7,7 @@ import { asHost, readBranch } from './store-host';
 import { applyDelete, applySet, type WritePolicy } from './store-writes';
 
 /** Deep-mutable plain data type of `T`: what `store.$draft` is typed as (functions and primitives as is). */
-export type Draft<T> = T extends (...args: never[]) => unknown
-  ? T
-  : T extends readonly (infer U)[]
-    ? Draft<U>[]
-    : T extends object
-      ? { -readonly [K in keyof T]: Draft<T[K]> }
-      : T;
+export type Draft<T> = JsonDraft<T>;
 
 /** What a draft needs: the store's write policy plus the callable proxy of a path (array mutators). */
 export interface DraftEnv extends WritePolicy {
