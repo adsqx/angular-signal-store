@@ -18,6 +18,7 @@ import {
   applyDeepSugarPatch,
   collectPipelineIntent,
   isDeepSugarAction,
+  tryFastMutation,
   tryFastPipelineMutation,
   tryFastStructuralMutation,
 } from '@adsq/jsnq/core/pipeline-fastpath';
@@ -38,6 +39,7 @@ const angularJsnqBridge: JsnqBridge = {
     asResult(tryFastPipelineMutation(value, operators, options)),
   tryFastStructuralMutation: (value, intent) =>
     asResult(tryFastStructuralMutation(value, asEngine<EngineArg<typeof tryFastStructuralMutation, 1>>(intent))),
+  tryFastMutation: (value, operators, options) => asResult(tryFastMutation(value, operators, options)),
   collectPipelineIntent,
   isDeepSugarAction,
   applyDeepSugarPatch: (value, criteria, actions) => asResult(applyDeepSugarPatch(value, criteria, actions)),

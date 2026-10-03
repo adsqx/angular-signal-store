@@ -14,6 +14,12 @@ export interface JsnqBridge {
     options: { collectAffectedPaths: boolean },
   ): FastMutationResult | null | undefined;
   tryFastStructuralMutation(value: unknown, intent: PipelineIntent): FastMutationResult | null | undefined;
+  /** The whole fast cascade (flat copy-on-write mutation, structural shortcut, deep sugar patch) in one call. */
+  tryFastMutation(
+    value: unknown,
+    operators: readonly unknown[],
+    options: { collectAffectedPaths: boolean },
+  ): FastMutationResult | null | undefined;
   collectPipelineIntent(operators: readonly unknown[]): PipelineIntent;
   isDeepSugarAction(action: unknown): boolean;
   applyDeepSugarPatch(value: unknown, criteria: unknown[], actions: unknown[]): FastMutationResult | null | undefined;

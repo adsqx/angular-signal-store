@@ -54,11 +54,9 @@ export function executeMutating(
 const MISS = Symbol('no-fast-mutation');
 
 /**
- * COW hot paths for mutate(): the shared jsnq engine (pipeline-fastpath.ts) computes the
- * next value without deep-cloning untouched branches, then it is committed exactly like the
- * pipeline path would. Covers the flat-array where+actions shape, the single-action
- * structural shortcuts (root insert, flat delete_key, insert_to-inside-array) and the sugar
- * deep patch. Returns MISS outside the guards, and the full clone+pipeline flow runs instead.
+ * COW hot paths for mutate(): jsnq's fast cascade (shared with the Solid store) computes the next
+ * value without deep-cloning untouched branches, then it is committed exactly like the pipeline
+ * path would. Returns MISS outside its guards, and the full clone+pipeline flow runs instead.
  */
 function tryFastMutate(host: StoreHost, path: string, operators: readonly Operator[]): unknown {
   const current = readBranch(host, path);
@@ -67,32 +65,14 @@ function tryFastMutate(host: StoreHost, path: string, operators: readonly Operat
   // Opt-in fine-grained wake for sub-path branches (flat value-action shape only) - mirrors
   // SolidStore: wake exactly the changed leaves instead of the whole branch.
   const precise = !!(path && host.preciseMutationWake && host.commitMutationPrecise);
-  const jsnq = requireJsnqBridge('mutate');
-  const fast = jsnq.tryFastPipelineMutation(current, operators, { collectAffectedPaths: precise });
-  if (fast) {
-    if (fast.mutations > 0) {
-      const paths = fast.affectedPaths;
-      if (precise && paths && paths.length > 0) host.commitMutationPrecise?.(path, fast.value, paths);
-      else commit(host, path, fast.value as JsonLike);
-    }
-    return fast.value;
+  const fast = requireJsnqBridge('mutate').tryFastMutation(current, operators, { collectAffectedPaths: precise });
+  if (!fast) return MISS;
+  if (fast.mutations > 0) {
+    const paths = fast.affectedPaths;
+    if (precise && paths && paths.length > 0) host.commitMutationPrecise?.(path, fast.value, paths);
+    else commit(host, path, fast.value as JsonLike);
   }
-
-  const intent = jsnq.collectPipelineIntent(operators);
-  const structural = jsnq.tryFastStructuralMutation(current, intent);
-  if (structural) {
-    commit(host, path, structural.value as JsonLike);
-    return structural.value;
-  }
-
-  // Sugar deep patch (where + update({patch})): not representable in the raw pipeline,
-  // the shared helper is the canonical semantics for every host.
-  if (intent.criteria.length > 0 && intent.actions.length > 0 && intent.actions.every(jsnq.isDeepSugarAction)) {
-    const patched = jsnq.applyDeepSugarPatch(current, intent.criteria, intent.actions);
-    commit(host, path, patched as JsonLike);
-    return patched;
-  }
-  return MISS;
+  return fast.value;
 }
 
 /** `store.branch.mutate(...ops)`: immediate execution, auto-clones and commits to the store. */
