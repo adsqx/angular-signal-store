@@ -616,12 +616,13 @@ Bundle size, measured on this revision from the ng-packagr output with esbuild
 
 | Entry | Minified | Gzip | Brotli |
 | --- | ---: | ---: | ---: |
-| Core (`@adsq/angular-signal-store`, `@adsq/jsnq` external) | 77.0 kB | 21.1 kB | 18.8 kB |
-| Core including the `@adsq/jsnq` path engine it uses | 83.1 kB | 23.0 kB | 20.5 kB |
-| Adding the `/jsnq` entry (query pipeline engine) | +44.1 kB | +12.6 kB | +11.1 kB |
-| Adding the `/devtools` entry | +3.8 kB | +0.9 kB | +0.7 kB |
+| Core (`@adsq/angular-signal-store`, `@adsq/jsnq` external) | 57.6 kB | 17.4 kB | 15.8 kB |
+| Core including the `@adsq/jsnq` path engine it uses | 63.4 kB | 19.5 kB | 17.6 kB |
+| Adding the `/jsnq` entry (query pipeline engine) | +47.6 kB | +15.5 kB | +13.7 kB |
+| Adding the `/devtools` entry | +3.8 kB | +0.8 kB | +0.7 kB |
 
-Applications that do not import `/jsnq` or `/devtools` do not pay for them.
+Applications that do not import `/jsnq` or `/devtools` do not pay for them. From RxJS the core uses
+only `BehaviorSubject`, `Observable` and `Subscription`, which `@angular/core` already loads.
 
 ## API reference
 

@@ -1,5 +1,5 @@
 import { PathUtils } from '../../utils/path-utils';
-import { resolveDependencyPath } from '@adsq/jsnq/data-engine';
+import { GenerationalCache, resolveDependencyPath } from '@adsq/jsnq/data-engine';
 import { VersionBumpScheduler } from '../../utils/version-bump-scheduler';
 import type { BehaviorService } from '../services/behavior.manager';
 import type { ProxyCacheManager } from '../services/proxy-cache.manager';
@@ -13,15 +13,12 @@ interface AncestorEntry {
   rootFirst?: string[];
 }
 
-const MAX_ENTRIES = 1000;
-
 /**
- * Insertion-order FIFO cache of `PathUtils.enumerateAncestors`. The computation is pure (the numeric
- * parent is always one of the ancestors), so eviction only affects performance. Returned arrays are
- * shared: callers must not mutate them.
+ * Cache of `PathUtils.enumerateAncestors` (pure, so eviction only affects performance), on jsnq's
+ * generational cache. Returned arrays are shared: callers must not mutate them.
  */
 class AncestorCache {
-  private readonly entries = new Map<string, AncestorEntry>();
+  private readonly entries = new GenerationalCache<AncestorEntry>(1000);
 
   selfFirst(path: string): string[] {
     return this.entry(path).selfFirst;
@@ -37,15 +34,7 @@ class AncestorCache {
   }
 
   private entry(path: string): AncestorEntry {
-    const cached = this.entries.get(path);
-    if (cached) return cached;
-    if (this.entries.size >= MAX_ENTRIES) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
-    }
-    const entry: AncestorEntry = { selfFirst: PathUtils.enumerateAncestors(path) };
-    this.entries.set(path, entry);
-    return entry;
+    return this.entries.get(path) ?? this.entries.set(path, { selfFirst: PathUtils.enumerateAncestors(path) });
   }
 }
 
