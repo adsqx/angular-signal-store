@@ -1,6 +1,6 @@
 import type { JsonLike, PipelineStats } from '@adsq/jsnq/core/types';
-import { requireJsnqBridge } from '../../core/jsnq-contract';
-import { logger } from '../../utils/logger';
+import { tryFastMutation } from '@adsq/jsnq/core/pipeline-fastpath';
+import { ɵlogger as logger } from '@adsq/angular-signal-store';
 import { readBranch, type StoreHost } from '../store-host';
 import { openPipeline } from './query';
 import type { MutationResult, Operator, PipelineMode } from './types';
@@ -40,7 +40,7 @@ export function executeMutating(
     logger.warn(`Cannot mutate undefined value at path: ${path || 'root'}`);
     return undefined;
   }
-  const pipeline = openPipeline('mutate', host, current, operators, true);
+  const pipeline = openPipeline(host, current, operators, true);
   // `first` stops at the first match; `count` only counts.
   const executable = mode === 'first' ? pipeline.with({ options: { ...pipeline.options, earlyTermination: true } }) : pipeline;
   const results = mode === 'count' ? [] : executable.all();
@@ -65,7 +65,7 @@ function tryFastMutate(host: StoreHost, path: string, operators: readonly Operat
   // Opt-in fine-grained wake for sub-path branches (flat value-action shape only) - mirrors
   // SolidStore: wake exactly the changed leaves instead of the whole branch.
   const precise = !!(path && host.preciseMutationWake && host.commitMutationPrecise);
-  const fast = requireJsnqBridge('mutate').tryFastMutation(current, operators, { collectAffectedPaths: precise });
+  const fast = tryFastMutation(current, operators, { collectAffectedPaths: precise });
   if (!fast) return MISS;
   if (fast.mutations > 0) {
     const paths = fast.affectedPaths;

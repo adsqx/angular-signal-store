@@ -2,7 +2,7 @@ import type { Observable, OperatorFunction } from 'rxjs';
 import { getActiveConsumer } from '@angular/core/primitives/signals';
 import { PathUtils } from '../utils/path-utils';
 import { ARRAY_MEMBER_KINDS, resolveArrayMember, type ArrayMemberKind, type BoundMethod } from './array-proxy-methods';
-import { createProxyApiMethod, PROXY_API_KEYS } from './pipeline';
+import { createProxyApiMethod, PROXY_API_KEYS } from './proxy-api';
 import { rootDraft } from './draft';
 import type { CoercionKey, ProxyNode } from './proxy-node';
 

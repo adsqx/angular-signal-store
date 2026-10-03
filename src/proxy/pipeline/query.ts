@@ -1,7 +1,8 @@
 import { computed, type Signal } from '@angular/core';
 import { cloneJsonData } from '@adsq/jsnq/data-engine';
 import type { JsonLike } from '@adsq/jsnq/core/types';
-import { requireJsnqBridge } from '../../core/jsnq-contract';
+import JsnqPipeline from '@adsq/jsnq/core/pipeline';
+import { collectPipelineIntent } from '@adsq/jsnq/core/pipeline-fastpath';
 import { hashString } from '../../utils/array-query';
 import { readBranch, type StoreHost } from '../store-host';
 import type { Operator, Pipeline, PipelineBuilder, PipelineEntry, PipelineMode, ReadMode } from './types';
@@ -38,12 +39,11 @@ const unwrapNode = (node: unknown): unknown =>
  * insists (`forceClone`) or when the operators contain actions, so the live store branch
  * is never edited in place. `api` names the entry point in the "jsnq not imported" error.
  */
-export function openPipeline(api: string, host: StoreHost, data: unknown, ops: readonly Operator[], forceClone = false): Pipeline {
-  const jsnq = requireJsnqBridge(api);
-  const clone = forceClone || jsnq.collectPipelineIntent(ops).actions.length > 0;
-  let pipeline = jsnq.createPipeline(clone ? cloneJsonData(data as JsonLike) : data, {
+export function openPipeline(host: StoreHost, data: unknown, ops: readonly Operator[], forceClone = false): Pipeline {
+  const clone = forceClone || collectPipelineIntent(ops).actions.length > 0;
+  let pipeline = new JsnqPipeline(clone ? cloneJsonData(data as JsonLike) : data as JsonLike, {
     trackOperations: host.createServiceGetter?.signalStore?.devActive === true,
-  }) as Pipeline;
+  }) as unknown as Pipeline;
   for (const op of ops) pipeline = op(pipeline);
   return pipeline;
 }
@@ -84,7 +84,7 @@ function reactiveSignal(host: StoreHost, path: string, operators: Operator[], mo
     if (service) service.getVersion(service.resolveVersionPathNormalized(path))();
     const current = readBranch(host, path);
     if (current === undefined) return strategy.empty();
-    return strategy.run(openPipeline('$liveQuery', host, current, operators));
+    return strategy.run(openPipeline(host, current, operators));
   });
   service?.registerPipelineComputed(cacheKey, signal);
   return signal;
@@ -104,7 +104,7 @@ export function createSnapshotQuery(host: StoreHost, path: string, mode: QueryMo
   return (...ops) => {
     const current = readBranch(host, path);
     if (current === undefined) return strategy.empty();
-    return strategy.run(openPipeline('$query', host, current, ops));
+    return strategy.run(openPipeline(host, current, ops));
   };
 }
 

@@ -22,8 +22,9 @@ import {
   tryFastPipelineMutation,
   tryFastStructuralMutation,
 } from '@adsq/jsnq/core/pipeline-fastpath';
-import { registerJsnqBridge } from './core/jsnq-contract';
-import type { FastMutationResult, JsnqBridge } from './core/jsnq-contract';
+import { ɵregisterJsnqBridge as registerJsnqBridge } from '@adsq/angular-signal-store';
+import { createProxyApiMethod } from './proxy/pipeline';
+import type { FastMutationResult, JsnqBridge, JsnqProxyApi } from './core/jsnq-contract';
 
 // The core contract is untyped (`unknown`) so it never imports engine types. Where the engine
 // is stricter than the contract, the value is narrowed here, in exactly these two helpers.
@@ -45,6 +46,6 @@ const angularJsnqBridge: JsnqBridge = {
   applyDeepSugarPatch: (value, criteria, actions) => asResult(applyDeepSugarPatch(value, criteria, actions)),
 };
 
-registerJsnqBridge(angularJsnqBridge);
+registerJsnqBridge(angularJsnqBridge, createProxyApiMethod as JsnqProxyApi);
 
 export { angularJsnqBridge };

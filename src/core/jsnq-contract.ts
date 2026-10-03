@@ -36,12 +36,20 @@ export interface PipelineIntent {
   actions: unknown[];
 }
 
-let bridge: JsnqBridge | undefined;
+/** Builds the jsnq member `key` (`mutate`, `$query`, ...) of a proxy node; supplied by the `/jsnq` entry. */
+export type JsnqProxyApi = (key: string, host: unknown, path: string) => ((...ops: unknown[]) => unknown) | null;
 
-/** Called by the `@adsq/angular-signal-store/jsnq` entry point. */
-export function registerJsnqBridge(implementation: JsnqBridge): void {
+let bridge: JsnqBridge | undefined;
+let proxyApi: JsnqProxyApi | undefined;
+
+/** Called by the `@adsq/angular-signal-store/jsnq` entry point (through the package name, so there is one registry). */
+export function registerJsnqBridge(implementation: JsnqBridge, api?: JsnqProxyApi): void {
   bridge = implementation;
+  if (api) proxyApi = api;
 }
+
+/** The registered proxy-member factory, if the `/jsnq` entry was imported. */
+export const jsnqProxyApi = (): JsnqProxyApi | undefined => proxyApi;
 
 /** Returns the bridge or throws an actionable error naming the missing import. */
 export function requireJsnqBridge(api: string): JsnqBridge {

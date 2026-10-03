@@ -1,5 +1,5 @@
 import type { Provider } from '@angular/core';
-import { SIGNAL_STORE_DEVTOOLS } from './core/devtools-contract';
+import { SIGNAL_STORE_DEVTOOLS } from '@adsq/angular-signal-store';
 import { DevService } from './devtools/dev.service';
 
 export { DevService } from './devtools/dev.service';
