@@ -1,3 +1,5 @@
+import { getJsonBySegments } from '@adsq/jsnq/core/data-engine';
+
 export type PathSegments = readonly string[];
 export type VersionDependencyMode = 'exact' | 'container';
 
@@ -39,13 +41,9 @@ export function isValidPathCore(path: string): boolean {
   return typeof path === 'string' && isValidNormalizedPathCore(normalizePathCore(path));
 }
 
+/** Segment read delegated to jsnq: same walk, and forbidden segments read as `undefined`. */
 export function getBySegmentsCore<T = unknown>(obj: unknown, segments: PathSegments): T | undefined {
-  let current: unknown = obj;
-  for (const segment of segments) {
-    if (current == null) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current as T | undefined;
+  return getJsonBySegments<T>(obj, segments);
 }
 
 /** Parent of an already validated normalized path (no re-validation); null for a root key. */

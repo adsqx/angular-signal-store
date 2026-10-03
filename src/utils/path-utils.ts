@@ -141,13 +141,7 @@ export function segmentsOf(path: string): readonly string[] {
 
 /** Fast read using pre-split segments; no segments reads the root itself. */
 export function readBySegments(root: Record<string, unknown> | undefined, segments: readonly string[]): unknown {
-  if (!root || segments.length === 0) return root;
-  let current: unknown = root;
-  for (const segment of segments) {
-    if (current == null) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
+  return getJsonBySegments(root, segments);
 }
 
 /** Value at `path` under `root`; blank paths and missing roots read as `undefined`. */
