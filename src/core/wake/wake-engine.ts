@@ -1,5 +1,5 @@
 import { PathUtils } from '../../utils/path-utils';
-import { resolveVersionPathCore } from '../../utils/path-core';
+import { resolveDependencyPath } from '@adsq/jsnq/data-engine';
 import { VersionBumpScheduler } from '../../utils/version-bump-scheduler';
 import type { BehaviorService } from '../services/behavior.manager';
 import type { ProxyCacheManager } from '../services/proxy-cache.manager';
@@ -78,7 +78,7 @@ export class WakeEngine {
 
   /** The version signal path that observers of `normalized` subscribe to. */
   resolve(normalized: string): string {
-    return resolveVersionPathCore(normalized, this.config);
+    return resolveDependencyPath(normalized, this.config);
   }
 
   /** Bump versions, refresh behaviors, optionally sync descendants. Returns whether behaviors are enabled. */

@@ -2,7 +2,12 @@
  * Reference implementations of path helpers the library itself no longer calls (it delegates to the
  * jsnq data engine). Kept only so `path-core-jsnq-parity.test.ts` can keep probing them against the engine.
  */
-import { getBySegmentsCore, hasForbiddenPathSegmentCore, isNumericSegmentCore, normalizePathCore, type PathSegments } from '../src/utils/path-core';
+import { getJsonBySegments as getBySegmentsCore, normalizeDotPath as normalizePathCore } from '@adsq/jsnq/data-engine';
+
+type PathSegments = readonly string[];
+const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
+const hasForbiddenPathSegmentCore = (segments: PathSegments): boolean => segments.some((s) => FORBIDDEN.has(s));
+const isNumericSegmentCore = (segment: string | undefined | null): boolean => !!segment && /^\d+$/.test(segment);
 
 export interface SplitPathOptions {
   normalize?: boolean;
@@ -121,3 +126,5 @@ export function cloneJsonCore<T>(value: T): T {
     }
   }
 }
+
+export { getBySegmentsCore };

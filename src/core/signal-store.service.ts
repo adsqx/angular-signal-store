@@ -7,7 +7,7 @@ import { createCallableProxy as createCallableProxyUtil } from '../proxy/proxy-n
 import { EMPTY, Observable, Subscription } from 'rxjs';
 import { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';
-import { getBySegmentsCore } from '../utils/path-core';
+import { getJsonBySegments } from '@adsq/jsnq/data-engine';
 import type { Stores } from '../types/registry';
 import type { StoreDevToolsAction } from '../devtools/types';
 import { setLoggerActive } from '../utils/logger';
@@ -199,7 +199,7 @@ export class SignalStore {
     const store = this.getStore(storeName);
     // Normalized twice on purpose: malformed bracket input is not a fixed point of normalization.
     const normalized = PathUtils.normalizePath(PathUtils.normalizePath(path));
-    return getBySegmentsCore(store.returnStore(), PathUtils.splitNormalizedPath(normalized));
+    return getJsonBySegments(store.returnStore(), PathUtils.splitNormalizedPath(normalized));
   }
 
   readStore(storeName: string, path: string) { return this.read(storeName, path); }

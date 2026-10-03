@@ -29,8 +29,8 @@ JSNQ. Consumers of the published package can install it as a skill; see the READ
   traps — the hot path), `proxy-resolve.ts` (cold special-name lookup),
   `array-proxy-methods.ts`, `proxy-factory.class.ts`, `store-writes.ts`, and `pipeline/` (the
   jsnq `mutate` / `query` / `$query*` / `$liveQuery*` surface).
-- `src/operations/`, `src/utils/` — typed array operations, path utilities, flat store map,
-  scheduling.
+- `src/operations/`, `src/utils/` — typed array operations, `PathUtils` (a facade over the jsnq dot
+  paths in `@adsq/jsnq/data-engine`, shared with the Solid store), flat store map, scheduling.
 - `src/devtools/` — optional adapter, exposed as the `/devtools` secondary entry point.
 - `test/` — headless smoke and throughput bench (run under `bun`, no browser needed).
 

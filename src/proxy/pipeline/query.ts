@@ -1,5 +1,5 @@
 import { computed, type Signal } from '@angular/core';
-import { cloneJsonData } from '@adsq/jsnq/core/data-engine';
+import { cloneJsonData } from '@adsq/jsnq/data-engine';
 import type { JsonLike } from '@adsq/jsnq/core/types';
 import { requireJsnqBridge } from '../../core/jsnq-contract';
 import { hashString } from '../../utils/array-query';

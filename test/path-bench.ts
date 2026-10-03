@@ -1,6 +1,6 @@
 /** Baseline for the path layer. Run: bun test/path-bench.ts */
 import { PathUtils } from '../src/utils/path-utils';
-import { parentPathOfCore, resolveVersionPathCore } from '../src/utils/path-core';
+import { dotPathParent as parentPathOfCore, resolveDependencyPath as resolveVersionPathCore } from '@adsq/jsnq/data-engine';
 
 const HOT = ['user.profile.name', 'board.rows.12.cells.3.value', 'a.b.c.d.e', 'items.0.tags.2'];
 const bench = (name: string, iterations: number, fn: (i: number) => void) => {

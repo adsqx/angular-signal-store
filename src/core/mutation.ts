@@ -1,9 +1,8 @@
 import type { StoreData } from '../types/advanced-types';
 import { PathUtils } from '../utils/path-utils';
-import { getBySegmentsCore } from '../utils/path-core';
 import type { CreateStoreService } from './create-store.core';
 import { FlatStoreMap } from '../utils/flat-store-map';
-import { JsonDataCursor, createJsonPathPlan, type JsonPathPlan } from '@adsq/jsnq/data-engine';
+import { JsonDataCursor, createJsonPathPlan, getJsonBySegments, type JsonPathPlan } from '@adsq/jsnq/data-engine';
 import type { StoreDevtools } from './store-devtools';
 import { wakeOptions } from './wake/wake-types';
 
@@ -119,7 +118,7 @@ export class StoreMutator {
     const segments = PathUtils.splitNormalizedPath(normalized);
     const last = segments[segments.length - 1];
     const store = this.getStore();
-    const parent = segments.length > 1 ? getBySegmentsCore(store, segments.slice(0, -1)) : store;
+    const parent = segments.length > 1 ? getJsonBySegments(store, segments.slice(0, -1)) : store;
     if (parent == null || typeof parent !== 'object') return;
     if (!Array.isArray(parent)) {
       delete (parent as Record<string, unknown>)[last];

@@ -5,9 +5,9 @@
  *
  * Run: bun test/path-core-jsnq-parity.test.ts
  */
-import { getBySegmentsCore } from '../src/utils/path-core';
 import {
   splitPathCore,
+  getBySegmentsCore,
   getByPathCore,
   setByPathCore,
   pathExistsCore,

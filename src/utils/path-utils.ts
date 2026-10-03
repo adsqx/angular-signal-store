@@ -1,77 +1,25 @@
-import { PathValue, StoreData } from '../types/advanced-types';
+import { PathValue } from '../types/advanced-types';
 import { StoreErrorFactory } from '../types/errors';
 import { logger } from './logger';
 import {
-  enumerateAncestorPathsCore,
-  hasForbiddenPathSegmentCore,
-  isValidPathCore,
-  normalizePathCore,
-} from './path-core';
-import { getJsonBySegments, writeJsonPathValue } from '@adsq/jsnq/core/data-engine';
+  dotPathAncestors, getJsonBySegments, isValidDotPath, normalizeDotPath, splitDotPath, writeJsonPathValue,
+} from '@adsq/jsnq/data-engine';
 
-export type { VersionDependencyMode } from './path-core';
+/** Path dependency granularity: the path itself, or its container. */
+export type VersionDependencyMode = 'exact' | 'container';
 
-/**
- * Bounded string-keyed cache with generational eviction. Evicting the oldest entry with
- * `map.delete(map.keys().next().value)` measured 6.85 us per insert once full (a fresh iterator
- * over a tombstoned V8 hash map), ~10x slower than the uncached work. Two maps instead: lookups check
- * `current` then `previous` (promoting a hit), and on overflow `current` becomes `previous` and a
- * fresh map is allocated (O(1), 0.33 us per insert) while roughly one generation stays warm.
- * Values must never be `undefined`: it signals absence.
- */
-class GenerationalCache<V> {
-  private current = new Map<string, V>();
-  private previous = new Map<string, V>();
-
-  constructor(private readonly limit: number) {}
-
-  get(key: string): V | undefined {
-    const hit = this.current.get(key);
-    if (hit !== undefined) return hit;
-    const stale = this.previous.get(key);
-    if (stale !== undefined) this.current.set(key, stale); // promote so the next generation keeps it
-    return stale;
-  }
-
-  set(key: string, value: V): void {
-    this.current.set(key, value);
-    if (this.current.size > this.limit) {
-      this.previous = this.current;
-      this.current = new Map();
-    }
-  }
-}
-
-/** Cached read plan for a raw path: its segments, or `false` when it must never be read. */
-type ReadPlan = readonly string[] | false;
-
-const CACHE_MAX = 5000;
-// Only operations that measurably profit from caching are cached (90% repeated / 10% new path mix,
-// 200k ops: splitting 30.0 -> 23.8 ms, validation 56.6 -> 29.0 ms); normalisation and version-path
-// resolution were slower cached than computed directly.
-const segmentsCache = new GenerationalCache<readonly string[]>(CACHE_MAX);
-const validCache = new GenerationalCache<boolean>(CACHE_MAX);
-const readPlanCache = new GenerationalCache<ReadPlan>(CACHE_MAX);
-
+/** The store's path syntax, parsing and caches are jsnq's dot paths, shared with the Solid store. */
 export class PathUtils {
   /** Type-safe path value getter; never throws, unsafe or blank paths read as `undefined`. */
   static getByPath<T extends object, P extends string>(
     obj: T | null | undefined,
     path: P
   ): PathValue<T, P> | undefined {
-    if (!obj || !path || typeof path !== 'string') return undefined;
-
-    let plan = readPlanCache.get(path);
-    if (plan === undefined) {
-      // trim/normalize/split/forbidden-check run once per distinct path, on a miss only
-      plan = path.trim().length === 0 ? false : PathUtils.splitNormalizedPath(normalizePathCore(path));
-      if (plan && hasForbiddenPathSegmentCore(plan)) plan = false;
-      readPlanCache.set(path, plan);
-    }
-    if (plan === false) return undefined;
-
+    if (!obj || !path || typeof path !== 'string' || path.trim().length === 0) return undefined;
+    // getJsonBySegments reads forbidden segments as undefined.
+    const segments = splitDotPath(normalizeDotPath(path));
     try {
-      return getJsonBySegments<PathValue<T, P>>(obj, plan);
+      return getJsonBySegments<PathValue<T, P>>(obj, segments);
     } catch (error) {
       logger.warn(`Failed to access path "${path}":`, error);
       return undefined;
@@ -87,7 +35,7 @@ export class PathUtils {
       throw StoreErrorFactory.pathValidation(path, 'Invalid path format');
     }
     try {
-      writeJsonPathValue(obj, normalizePathCore(path), value);
+      writeJsonPathValue(obj, normalizeDotPath(path), value);
     } catch (error) {
       throw StoreErrorFactory.pathAccess(path, 'set', error as Error);
     }
@@ -98,26 +46,16 @@ export class PathUtils {
     if (!path || typeof path !== 'string') {
       throw StoreErrorFactory.pathValidation(path, 'Path must be a non-empty string');
     }
-    return normalizePathCore(path);
+    return normalizeDotPath(path);
   }
 
   /** Validates that a path string has correct format. */
   static isValidPath(path: string): boolean {
-    if (!path || typeof path !== 'string') return false;
-    const cached = validCache.get(path);
-    if (cached !== undefined) return cached;
-    const valid = isValidPathCore(path);
-    validCache.set(path, valid);
-    return valid;
+    return isValidDotPath(path);
   }
 
   static splitNormalizedPath(normalized: string): readonly string[] {
-    if (!normalized) return [];
-    const cached = segmentsCache.get(normalized);
-    if (cached !== undefined) return cached;
-    const segs = normalized.split('.');
-    segmentsCache.set(normalized, segs);
-    return segs;
+    return splitDotPath(normalized);
   }
 
   /**
@@ -125,7 +63,7 @@ export class PathUtils {
    * ['users.0.name','users.0','users']. The numeric parent is always among them.
    */
   static enumerateAncestors(path: string): string[] {
-    return enumerateAncestorPathsCore(path);
+    return dotPathAncestors(path);
   }
 
   static isBranchValue(value: unknown): value is object {
