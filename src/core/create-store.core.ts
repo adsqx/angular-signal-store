@@ -1,6 +1,6 @@
 import { BehaviorSubject, Observable } from 'rxjs';
 import { Signal, WritableSignal, computed } from '@angular/core';
-import { PathUtils, readBySegments, segmentsOf } from '../utils/path-utils';
+import { PathUtils } from '../utils/path-utils';
 import type { ProxyCallable } from '../interfaces/types';
 import { SignalStore } from './signal-store.service';
 import { ComputedService } from './services/computed.manager';
@@ -48,18 +48,13 @@ export class CreateStoreService<TState extends object = StoreData> {
 
   startCollect(): void { this.dependencyTracker.startCollect(); }
   stopCollect(): Set<string> | null { return this.dependencyTracker.stopCollect(); }
-  registerRead(path: string): void { this.dependencyTracker.registerRead(path); }
   registerReadNormalized(path: string): void { this.dependencyTracker.registerReadNormalized(path); }
   setTrackReads(enabled: boolean) { this.dependencyTracker.setTrackReads(enabled); }
-  getTrackReads(): boolean { return this.dependencyTracker.getTrackReads(); }
   isCollectingReads(): boolean { return this.dependencyTracker.isCollecting(); }
 
   setDependencyMode(mode: 'exact' | 'container') { this.wake.config.dependencyMode = mode; }
-  getDependencyMode(): 'exact' | 'container' { return this.wake.config.dependencyMode; }
   setAutoBatchBumps(enabled: boolean): void { this.wake.config.autoBatch = !!enabled; }
   getAutoBatchBumps(): boolean { return this.wake.config.autoBatch; }
-  setBumpNumericParent(enabled: boolean): void { this.wake.config.bumpNumericParent = !!enabled; }
-  getBumpNumericParent(): boolean { return this.wake.config.bumpNumericParent; }
   setPartialInvalidation(enabled: boolean): void { this.wake.config.partial = !!enabled; }
   setVersionBumpStrategy(strategy: 'microtask' | 'raf'): void { this.wake.scheduler.setStrategy(strategy); }
   setVersionBumpThrottle(ms: number): void { this.wake.scheduler.setThrottle(ms); }
@@ -71,11 +66,6 @@ export class CreateStoreService<TState extends object = StoreData> {
 
   resolveVersionPath(path: string): string { return this.wake.resolve(PathUtils.normalizePath(path)); }
   resolveVersionPathNormalized(normalized: string): string { return this.wake.resolve(normalized); }
-
-  getPathSegments(path: string): readonly string[] { return segmentsOf(path); }
-  fastReadBySegments(root: unknown, pathSegments: readonly string[]): unknown {
-    return readBySegments(root as Record<string, unknown>, pathSegments);
-  }
 
   private get computedSvc(): ComputedService<TState> {
     return (this._computedSvc ??= new ComputedService<TState>(this, this.ctx));
@@ -139,7 +129,6 @@ export class CreateStoreService<TState extends object = StoreData> {
     });
   }
 
-  private observableMethodCache: Record<string, (...args: unknown[]) => unknown> = Object.create(null);
   private readonly proxyCacheManager: ProxyCacheManager;
 
   constructor(
@@ -175,11 +164,6 @@ export class CreateStoreService<TState extends object = StoreData> {
 
   setCloneComputedOutputs(enabled: boolean) { this.cloneComputedOutputs = !!enabled; }
   getCloneComputedOutputs(): boolean { return this.cloneComputedOutputs; }
-
-  getCachedObservableMethod(path: string, method: string, observable: object): (...args: unknown[]) => unknown {
-    const key = `${PathUtils.normalizePath(path)}.${method}`;
-    return (this.observableMethodCache[key] ??= (observable as Record<string, (...args: unknown[]) => unknown>)[method].bind(observable));
-  }
 
   createArrayQueryComputed<
     P extends ValidPath<TState> & string,
@@ -225,10 +209,6 @@ export class CreateStoreService<TState extends object = StoreData> {
   getBehaviorStore(): Record<string, BehaviorSubject<unknown>> { return this.behaviors.store(); }
   cleanupBehaviorStore(pathPrefix?: string): void { this.behaviors.cleanup(pathPrefix); }
 
-  updateBehaviorByPrefix(pathPrefix: string, options?: { skipSelf?: boolean }): void {
-    this.wake.updateBehaviorsByPrefix(pathPrefix, !!options?.skipSelf);
-  }
-
   destroy(): void {
     this.stopCollect();
     this.behaviors.destroy();
@@ -236,7 +216,6 @@ export class CreateStoreService<TState extends object = StoreData> {
     this.versions.cleanup();
     this.wake.destroy();
     this.proxyCacheManager.reset();
-    this.observableMethodCache = Object.create(null);
     this._storeProxy = undefined;
     this.usingComputedStoreFallback = false;
   }
@@ -248,7 +227,5 @@ export class CreateStoreService<TState extends object = StoreData> {
     return version;
   }
 
-  bumpVersionsForNormalized(normalized: string): void { this.wake.bump(normalized); }
-  bumpDescendantVersionsForNormalized(normalizedPrefix: string): void { this.wake.bumpDescendants(normalizedPrefix); }
   cleanupVersionStore(pathPrefix?: string): void { this.versions.cleanup(pathPrefix); }
 }

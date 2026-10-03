@@ -1,5 +1,3 @@
-import { PathUtils } from '../../utils/path-utils';
-
 export class DependencyTracker {
   private activeCollector: Set<string> | null = null;
   private trackReads = true;
@@ -14,20 +12,12 @@ export class DependencyTracker {
     return collector;
   }
 
-  registerRead(path: string): void {
-    if (this.isCollecting()) this.activeCollector!.add(PathUtils.normalizePath(path));
-  }
-
   registerReadNormalized(path: string): void {
     if (this.isCollecting()) this.activeCollector!.add(path);
   }
 
   setTrackReads(enabled: boolean): void {
     this.trackReads = !!enabled;
-  }
-
-  getTrackReads(): boolean {
-    return this.trackReads;
   }
 
   isCollecting(): boolean {
