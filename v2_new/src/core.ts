@@ -1,8 +1,13 @@
 /**
- * v2 core: the store data is immutable. One root signal holds it; every path is a `computed` over its
- * parent, so Angular's own equality check wakes exactly the branches whose reference changed. A write
- * copies the path from the root to the target (structural sharing); inside a transaction each node is
- * copied once and then edited in place, and the root signal is set once at the end.
+ * v2 core: the store data is immutable and every read path has its own signal (a signal tree).
+ *
+ * - A write copies the path from the root to the target (structural sharing), then sets the signals of
+ *   that path's existing nodes and of the changed part of its subtree. Sibling branches and untouched
+ *   array elements get no notification at all, and `signal.set` skips values whose reference is unchanged.
+ * - Copy only when someone has seen it: a copy made by a write stays editable in place (across commits)
+ *   until the data is observed (a node read, or a raw read that hands out a reference). The next write
+ *   after an observation starts a new generation and copies again. A loop of writes with no reads in
+ *   between costs about what in-place mutation does; `batch()` makes one commit.
  */
 import { computed, signal, untracked, type Signal, type WritableSignal } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
@@ -10,10 +15,16 @@ import { normalizeDotPath, splitDotPath } from '@adsq/jsnq/data-engine';
 
 export type Data = Record<string, unknown>;
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
-const NODE_CAP = 5000;
 
 export const isObj = (v: unknown): v is Data => v !== null && typeof v === 'object';
-export const isIndex = (s: string | undefined): boolean => !!s && /^\d+$/.test(s);
+export function isIndex(s: string | undefined): boolean {
+  if (!s) return false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
 export const segmentsOf = (path: string): readonly string[] => splitDotPath(normalizeDotPath(path));
 
 /** JSON read: only objects and arrays are traversed (a string's characters are not children). */
@@ -26,24 +37,53 @@ export function getIn(root: unknown, segs: readonly string[]): unknown {
   return current;
 }
 
+interface Node {
+  readonly path: string;
+  readonly segs: readonly string[];
+  readonly parent: Node | null;
+  readonly value: WritableSignal<unknown>;
+  /** What consumers read: marks the data as observed, then reads `value`. */
+  readonly read: Signal<unknown>;
+  /** Existing child nodes. */
+  readonly children: Set<Node>;
+  /** The non-index ones among them (`length`, named keys), refreshed also by a ranged array write. */
+  readonly named: Set<Node>;
+  /** The commit that last queued this node for a refresh. */
+  mark: number;
+  /** The commit that last queued this node's whole subtree. */
+  tree: number;
+  /** Its value in the commit `seen` (memoized during a commit, so each node reads one key of its parent). */
+  seen: number;
+  next: unknown;
+}
+
+/** Array elements of a written path that can have changed: indexes `from` up to (not including) `until`. */
+export interface Range { from: number; until: number }
+
+const merge = (a: Range | null, b: Range | null): Range | null =>
+  a && b ? { from: Math.min(a.from, b.from), until: Math.max(a.until, b.until) } : null;
+
 export class StoreCore {
+  /** The whole data, for root-level consumers; nodes are refreshed from it on every commit. */
   readonly root: WritableSignal<Data>;
   private pending: Data | null = null;
   private depth = 0;
-  /**
-   * Copies made in the current generation. A generation stays open (its copies editable in place,
-   * across commits) until something observes the data: a computed reading the root, or any read that
-   * hands out a reference. The next write after an observation starts a new generation and copies again.
-   */
   private readonly owner = new WeakMap<object, number>();
   private gen = 0;
   private sealed = true;
-  /** Root read for the top-level computeds: marks the data as observed. */
-  readonly readRoot = (): Data => {
-    this.sealed = true;
-    return this.root();
-  };
-  private readonly nodes = new Map<string, Signal<unknown>>();
+  private readonly nodes = new Map<string, Node>();
+  private readonly topLevel = new Set<Node>();
+  /** Commit counter: `Node.mark` / `Node.seen` compare against it. */
+  private mark = 0;
+  private committed: Data | null = null;
+  private readonly queue: Node[] = [];
+  /**
+   * Paths written in the open transaction with the array range that can have changed (`null`: the whole
+   * subtree). The first one is kept in fields, so a single write allocates no map.
+   */
+  private firstPath: string | null = null;
+  private firstRange: Range | null = null;
+  private moreTouched: Map<string, Range | null> | null = null;
   private readonly listeners = new Set<() => void>();
   private subjects?: Map<string, BehaviorSubject<unknown>>;
   behaviorUpdates = true;
@@ -51,6 +91,12 @@ export class StoreCore {
   constructor(initial: Data) {
     this.root = signal(initial);
   }
+
+  /** Root read for root-level consumers: marks the data as observed. */
+  readonly readRoot = (): Data => {
+    this.sealed = true;
+    return this.root();
+  };
 
   /** Current data, uncommitted transaction writes included (untracked); the caller may keep references. */
   get data(): Data {
@@ -76,25 +122,44 @@ export class StoreCore {
     this.sealed = true;
   }
 
-  /** The computed of a normalized path (created on first use). Stale nodes stay valid after eviction. */
+  /** The signal of a normalized path (its ancestors get nodes too, so the tree has no gaps). */
   node(path: string): Signal<unknown> {
+    return this.ensure(path).read;
+  }
+
+  private ensure(path: string): Node {
     let n = this.nodes.get(path);
     if (n) return n;
-    if (this.nodes.size >= NODE_CAP) this.nodes.clear();
     const dot = path.lastIndexOf('.');
-    const parent: () => unknown = dot < 0 ? this.readRoot : this.node(path.slice(0, dot));
-    const key = dot < 0 ? path : path.slice(dot + 1);
-    n = FORBIDDEN.has(key)
-      ? computed(() => undefined)
-      : computed(() => {
-          const p = parent();
-          return p !== null && typeof p === 'object' ? (p as Data)[key] : undefined;
-        });
+    const parent = dot < 0 ? null : this.ensure(path.slice(0, dot));
+    const segs = segmentsOf(path);
+    const value = signal<unknown>(getIn(this.raw, segs));
+    n = {
+      path,
+      segs,
+      parent,
+      mark: 0,
+      tree: 0,
+      seen: 0,
+      next: undefined,
+      value,
+      read: computed(() => {
+        this.sealed = true;
+        return value();
+      }),
+      children: new Set(),
+      named: new Set(),
+    };
     this.nodes.set(path, n);
+    if (!parent) this.topLevel.add(n);
+    else {
+      parent.children.add(n);
+      if (!isIndex(path.slice(dot + 1))) parent.named.add(n);
+    }
     return n;
   }
 
-  /** Runs `fn` as one transaction: consumers see a single root change when the outermost one ends. */
+  /** Runs `fn` as one transaction: signals change once, when the outermost one ends. */
   batch<R>(fn: () => R): R {
     if (this.depth++ === 0 && this.sealed) {
       this.gen++;
@@ -111,21 +176,26 @@ export class StoreCore {
   setRoot(next: Data): void {
     this.batch(() => {
       this.pending = next;
+      this.touch('', null);
     });
   }
 
   /** Replaces the value at `segs` (missing or wrongly shaped parents are created); returns the previous value. */
-  write(segs: readonly string[], value: unknown): unknown {
+  write(segs: readonly string[], value: unknown, path?: string): unknown {
     let previous: unknown;
-    this.update(segs, (current) => ((previous = current), value));
+    this.update(segs, (current) => ((previous = current), value), null, path);
     return previous;
   }
 
-  /** `next(current)` becomes the value at `segs`; the path is copied (or reused when owned by this transaction). */
-  update<R = unknown>(segs: readonly string[], next: (current: unknown) => unknown): void {
+  /**
+   * `next(current)` becomes the value at `segs`. `range` limits which array elements can have changed,
+   * so a push or pop does not revisit the array's other elements.
+   */
+  update(segs: readonly string[], next: (current: unknown) => unknown, range: Range | null = null, path = segs.join('.')): void {
     if (segs.length === 0) return;
     this.batch(() => {
       this.pending = this.setIn(this.raw, segs, 0, next) as Data;
+      this.touch(path, range);
     });
   }
 
@@ -135,13 +205,17 @@ export class StoreCore {
     if (!isObj(parent)) return undefined;
     const key = segs[segs.length - 1]!;
     const previous = parent[key];
+    const length = Array.isArray(parent) ? parent.length : 0; // before the splice: `parent` may be edited in place
     this.batch(() => {
       this.pending = this.removeIn(this.raw, segs, 0) as Data;
+      // Removing an array element shifts the ones after it.
+      if (Array.isArray(parent) && isIndex(key)) this.touch(segs.slice(0, -1).join('.'), { from: Number(key), until: length });
+      else this.touch(segs.join('.'), null);
     });
     return previous;
   }
 
-  /** An owned (mutable for this transaction) copy of `o`. */
+  /** An owned (editable in this generation) copy of `o`. */
   own<T extends object>(o: T): T {
     if (this.owner.get(o) === this.gen) return o;
     const copy = (Array.isArray(o) ? o.slice() : { ...o }) as T;
@@ -153,6 +227,16 @@ export class StoreCore {
     const created = (array ? [] : {}) as Data;
     this.owner.set(created, this.gen);
     return created;
+  }
+
+  private touch(path: string, range: Range | null): void {
+    if (this.firstPath === null || this.firstPath === path) {
+      this.firstRange = this.firstPath === null ? range : merge(this.firstRange, range);
+      this.firstPath = path;
+      return;
+    }
+    const more = (this.moreTouched ??= new Map());
+    more.set(path, more.has(path) ? merge(more.get(path)!, range) : range);
   }
 
   private setIn(node: unknown, segs: readonly string[], i: number, next: (current: unknown) => unknown): unknown {
@@ -167,6 +251,8 @@ export class StoreCore {
       const child = container[key];
       const nextIsIndex = isIndex(segs[i + 1]);
       const fits = isObj(child) && (!nextIsIndex || Array.isArray(child));
+      // A replaced value changes everything below it, not only the written path.
+      if (!fits) this.touch(segs.slice(0, i + 1).join('.'), null);
       value = this.setIn(fits ? child : this.fresh(nextIsIndex), segs, i + 1, next);
     }
     if (Array.isArray(container) && isIndex(key)) (container as unknown[])[Number(key)] = value;
@@ -189,15 +275,70 @@ export class StoreCore {
 
   private commit(): void {
     const next = this.pending;
-    this.pending = null;
-    // Same root object: the open generation was edited in place and nobody has observed it yet.
-    if (!next || next === untracked(this.root)) return;
-    this.root.set(next);
+    const first = this.firstPath;
+    const firstRange = this.firstRange;
+    const more = this.moreTouched;
+    this.pending = this.firstPath = this.firstRange = this.moreTouched = null;
+    if (!next) return;
+    if (next !== untracked(this.root)) this.root.set(next);
+    // Nodes to refresh: the existing ancestors-or-self of each written path and the changed part of its subtree.
+    this.mark++;
+    this.committed = next;
+    const queue = this.queue;
+    if (first !== null) this.visit(first, firstRange);
+    if (more) for (const [path, range] of more) this.visit(path, range);
+    for (let i = 0; i < queue.length; i++) queue[i]!.value.set(this.valueOf(queue[i]!));
+    for (let i = 0; i < queue.length; i++) queue[i]!.next = undefined; // holds no data between commits
+    queue.length = 0;
+    this.committed = null;
     for (const listener of this.listeners) {
       try {
         listener();
       } catch (e) {
         console.warn('SignalStore listener error:', e);
+      }
+    }
+  }
+
+  private queueNode(n: Node): void {
+    if (n.mark === this.mark) return;
+    n.mark = this.mark;
+    this.queue.push(n);
+  }
+
+  /** `n` and its existing descendants. */
+  private queueTree(n: Node): void {
+    if (n.tree === this.mark) return; // an ancestor queued alone can still need its subtree queued
+    n.tree = this.mark;
+    this.queueNode(n);
+    for (const c of n.children) this.queueTree(c);
+  }
+
+  /** Value of `n` in the data being committed (each node reads one key of its parent's memoized value). */
+  private valueOf(n: Node): unknown {
+    if (n.seen === this.mark) return n.next;
+    const holder = n.parent ? this.valueOf(n.parent) : this.committed;
+    const key = n.segs[n.segs.length - 1]!;
+    n.seen = this.mark;
+    return (n.next = isObj(holder) && !FORBIDDEN.has(key) ? holder[key] : undefined);
+  }
+
+  private visit(path: string, range: Range | null): void {
+    const self = path ? this.nodes.get(path) : undefined;
+    let up: Node | null | undefined = self;
+    for (let end = path.lastIndexOf('.'); !up && end > 0; end = path.lastIndexOf('.', end - 1)) up = this.nodes.get(path.slice(0, end));
+    for (; up; up = up.parent) {
+      this.queueNode(up);
+      // An array's named children can change with any write below it: `length`, and keys a copy drops.
+      if (up !== self && up.named.size && Array.isArray(this.valueOf(up))) for (const c of up.named) this.queueTree(c);
+    }
+    if (!path) for (const c of this.topLevel) this.queueTree(c);
+    else if (self && range === null) for (const c of self.children) this.queueTree(c);
+    else if (self) {
+      for (const c of self.named) this.queueTree(c);
+      for (let i = range!.from; i < range!.until; i++) {
+        const c = this.nodes.get(`${path}.${i}`);
+        if (c) this.queueTree(c);
       }
     }
   }
@@ -225,19 +366,14 @@ export class StoreCore {
     return s;
   }
 
-  hasSubject(path: string): boolean {
-    return !!this.subjects?.has(path);
-  }
-
   subjectsObject(): Record<string, BehaviorSubject<unknown>> {
     return Object.fromEntries(this.subjects ?? []);
   }
 
-  /** Completes and drops the subjects and computeds at and below `path` (all of them without one). */
+  /** Completes and drops the subjects at and below `path` (all of them without one). Node signals stay valid. */
   cleanup(path?: string): void {
     const inside = (k: string) => !path || k === path || k.startsWith(`${path}.`);
     for (const [k, s] of this.subjects ?? []) if (inside(k)) { s.complete(); this.subjects!.delete(k); }
-    for (const k of [...this.nodes.keys()]) if (inside(k)) this.nodes.delete(k);
   }
 
   destroy(): void {

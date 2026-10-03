@@ -1,5 +1,5 @@
 /** Array mutations and queries over the immutable core: a mutation edits an owned copy of the array. */
-import type { StoreCore } from './core';
+import type { Range, StoreCore } from './core';
 import { segmentsOf } from './core';
 
 export type Predicate = (item: unknown, index: number, array: unknown[]) => unknown;
@@ -13,12 +13,23 @@ export const QUERIES = new Set(['find', 'findIndex', 'filter', 'map', 'reduce', 
 export function arrayOp(core: StoreCore, path: string, method: string, args: unknown[]): unknown {
   if (!Array.isArray(core.peek(path))) return undefined;
   let result: unknown;
+  // Elements that can have changed: push/pop touch only the tail, splice starts at its index.
+  const range: Range = { from: 0, until: 0 };
   core.update(segmentsOf(path), (current) => {
     const copy = core.own(current as unknown[]);
+    const before = copy.length;
     result = (copy as unknown as Record<string, (...a: unknown[]) => unknown>)[method](...args);
+    range.from = method === 'push' || method === 'pop' ? Math.min(before, copy.length) : method === 'splice' ? spliceStart(args[0], before) : 0;
+    range.until = Math.max(before, copy.length);
     return copy;
-  });
+  }, range);
   return result;
+}
+
+/** Array.prototype.splice's start index normalization. */
+function spliceStart(start: unknown, length: number): number {
+  const n = Math.trunc(Number(start)) || 0;
+  return n < 0 ? Math.max(length + n, 0) : Math.min(n, length);
 }
 
 const QUERY_RUN: Record<string, (arr: unknown[], input: unknown, extra: unknown[]) => unknown> = {

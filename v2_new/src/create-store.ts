@@ -83,7 +83,7 @@ export class CreateStore<T extends object = Data> {
   // Writes
   private put(normalized: string, value: unknown, observe: boolean): void {
     const segs = segmentsOf(normalized);
-    const previous = observe && value === undefined ? this.core.remove(segs) : this.core.write(segs, value);
+    const previous = observe && value === undefined ? this.core.remove(segs) : this.core.write(segs, value, normalized);
     if (observe) this.core.subject(normalized);
     this.dev('SET_VALUE_OBSERVE', { path: normalized, value, oldValue: previous });
     // Unlike the current store, a removed path keeps its subjects: subscribers see `undefined`, then the next value.

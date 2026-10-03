@@ -13,15 +13,29 @@ bash v2_new/run-compat.sh   # only the current test suites and examples, run aga
 The writing style stays the same: `store.a.b = x`, `list.push(...)`, `$draft`, `mutate(where(...),
 update(...))`. Underneath, the data is immutable:
 
-- One root signal holds the data. Every path is `computed(() => parent()[key])`, so Angular's own
-  equality check wakes exactly the branches whose reference changed. There are no version signals,
-  ancestor bumps, wake modes, scheduler, proxy-cache invalidation or write cursor.
-- A write copies the path from the root to the target (structural sharing).
+- **A signal tree.** Every path that is read gets its own signal (its ancestors get one too). A
+  write copies the path from the root to the target (structural sharing) and then sets only the
+  signals of that path: its ancestors, itself and the part of its subtree that can have changed. An
+  array push or pop refreshes only the new or removed tail, a splice only the elements from its
+  start index. Sibling branches and other array elements are not notified at all, and `signal.set`
+  with an unchanged reference is a no-op. There are no version signals, ancestor bumps, wake
+  modes, scheduler, proxy-cache invalidation or write cursor.
 - **Copy only when someone has seen it.** A copy made by a write stays editable in place until the
-  data is observed: a computed reads it, or a read hands out a reference (`readStore`, `$val`,
+  data is observed: a path signal is read, or a read hands out a reference (`readStore`, `$val`,
   subscriptions, devtools). Only the next write after an observation copies again. A loop of
-  writes with no reads in between therefore costs the same as in-place mutation, and `batch()`
-  produces one root change.
+  writes with no reads in between therefore costs about what in-place mutation does, and `batch()`
+  produces one commit.
+
+### Why not one root signal with `computed` branches
+
+An earlier version of this prototype kept the whole data in one signal and made every path a
+`computed(() => parent()[key])`. Angular recomputes a computed only when it is read, so idle
+branches cost nothing. But every live consumer (template binding, effect) is notified on every write
+and has to re-check its dependency chain, so a write costs O(number of live consumers). With 20,000
+bindings that was 14.6 ms per write, even for a write nobody displays. The current store avoids
+that with per-path version signals, but then a write to one item bumps the array's version and wakes
+every consumer of every item. The signal tree notifies only the consumers of the paths that changed
+(see "Live consumers" below).
 
 Sources: `src/core.ts` (data, signals, writes), `src/proxy.ts`, `src/create-store.ts`,
 `src/signal-store.ts`, `src/arrays.ts`, `src/draft.ts`, `src/jsnq.ts` (optional entry).
@@ -49,34 +63,57 @@ ported as is.
 | Bundle | Minified | Gzip | Brotli |
 | --- | ---: | ---: | ---: |
 | current: core + the jsnq path engine it uses | 63.0 kB | 19.3 kB | 17.4 kB |
-| **v2: core + the jsnq path engine it uses** | **20.3 kB** | **7.1 kB** | **6.5 kB** |
+| **v2: core + the jsnq path engine it uses** | **22.5 kB** | **7.9 kB** | **7.2 kB** |
 | current: core + `/jsnq` entry (queries) | 110.4 kB | 34.8 kB | 31.2 kB |
-| v2: core + `/jsnq` entry (queries) | 69.9 kB | 23.2 kB | 21.0 kB |
+| v2: core + `/jsnq` entry (queries) | 72.1 kB | 23.9 kB | 21.7 kB |
+
+### Live consumers (`bench-live.ts`, ms for 1,000 writes; lower is better)
+
+N live consumers (`createWatch`, what template bindings and effects are), each reading
+`items[i].v` of a different item. Every consumer re-run is counted; both stores re-run exactly the
+one consumer whose item changed, and none for the other writes.
+
+| Write, N live consumers | Current | v2 |
+| --- | ---: | ---: |
+| one item, 1,000 | 1,416 | 21 |
+| one item, 5,000 | 10,735 | 37 |
+| one item, 20,000 | 47,589 | 83 |
+| outside `items`, 1,000 / 20,000 | 1.7 / 2.5 | 2.3 / 2.5 |
+| push + pop on `items`, 1,000 | 2,088 | 10 |
+| push + pop on `items`, 5,000 | 13,027 | 6.4 |
+| push + pop on `items`, 20,000 | 58,778 | 9.8 |
+
+In the current store a write to one item bumps the array's version, which wakes every consumer of
+every item; each one then re-checks its chain. In v2 only the written item's signals change.
 
 ### Throughput (`test/store-throughput-bench.ts`, ms, median of 5; lower is better)
 
 | Case | Current | v2 |
 | --- | ---: | ---: |
-| deep read, full navigation (500k) | 163 | 154 |
-| deep write, full navigation (200k) | 164 | 215 |
-| deep write, cached parent (200k) | 149 | 174 |
-| push + pop, full navigation (100k) | 462 | 226 |
-| push + pop, cached node (100k) | 412 | 210 |
-| three writes in a batch (100k) | 510 | 249 |
+| deep read, full navigation (500k) | 159 | 152 |
+| deep write, full navigation (200k) | 156 | 264-290 |
+| deep write, cached parent (200k) | 143 | 280 |
+| push + pop, full navigation (100k) | 548 | 405-427 |
+| push + pop, cached node (100k) | 432 | 377-402 |
+| three writes in a batch (100k) | 714 | 536-605 |
+
+A single deep write is the one case where v2 is slower: about 1.4 µs instead of 0.75 µs, for the
+path copy and the per-path signal updates. At 60 writes per second that is invisible; it matters
+only for tight loops of hundreds of thousands of writes, and `batch()` makes those one commit.
 
 ### Scenarios sensitive to the immutable core (`bench-extra.ts`, ms; lower is better)
 
 | Scenario | Current | v2 |
 | --- | ---: | ---: |
-| push x10k into a 10k array, no batch | 27 | 34 |
-| push x10k into a 10k array, one batch | 16 | 14 |
-| worst case: push + tracked read x2k, 10k array | 167 | 143 |
-| update 1k items by index, no batch | 6.5 | 5.2 |
-| write 1k keys of a 1k-key object | 5.4 | 3.7 |
-| 1k computeds on items, write one item x1k | 1231 | 338 |
+| push x10k into a 10k array, no batch | 54 | 56 |
+| push x10k into a 10k array, one batch | 25 | 21 |
+| worst case: push + tracked read x2k, 10k array | 138 | 150 |
+| update 1k items by index, no batch | 8.5 | 5.8 |
+| write 1k keys of a 1k-key object | 4.2 | 6.7 |
+| 1k computeds on items, write one item x1k | 1,166 | 172 |
 | deep read x200k | 50 | 48 |
-| 100 RxJS subscribers, 1k writes to another leaf | 1.9 | 2.7 |
-| select over 2 paths, 5k writes | 22 | 20 |
+| 100 RxJS subscribers, 1k writes to another leaf | 1.8 | 2.7 |
+| select over 2 paths, 5k writes | 25 | 12 |
 
 Benchmarks vary by about ±15% between runs; differences inside that band are noise.
 
@@ -91,6 +128,9 @@ updates (for example `"undefined"` as a string, or `[]` from `$liveQuery` on a n
 | current, `exact` | 390 | 197 (95 of them RxJS subscriptions) |
 | current, `container` | 347 | 153 |
 | v2 (no dependency modes) | 239 | 13 |
+
+The signal tree flags exactly the same 13 cases as the earlier one-root design of v2. With
+`WELL=1` (only writes that keep each path's type) both v2 designs have 4.
 
 ## Behaviour differences from the current store
 
